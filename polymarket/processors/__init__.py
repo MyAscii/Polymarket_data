@@ -17,6 +17,7 @@ from .trades import (
 )
 from .cleaner import clean_users, clean_trades, clean_users_df, clean_trades_df
 from .resolution_decoder import ResolutionDecoder
+from .ctf_position_decoder import CtfPositionDecoder
 
 __all__ = [
     'EventDecoder',
@@ -31,4 +32,5 @@ __all__ = [
     'clean_users_df',
     'clean_trades_df',
     'ResolutionDecoder',
+    'CtfPositionDecoder',
 ]

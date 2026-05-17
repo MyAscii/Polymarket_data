@@ -30,13 +30,14 @@ from ..config import (
     USERS_CLEAN_FILE, QUANT_CLEAN_FILE,
     USERS_PREVIEW_FILE, QUANT_PREVIEW_FILE,
     RESOLUTIONS_FILE, RESOLUTIONS_PREVIEW_FILE,
+    CTF_POSITIONS_FILE, CTF_POSITIONS_PREVIEW_FILE,
 )
-from ..fetchers import LogFetcher, GammaApiClient, ResolutionFetcher
+from ..fetchers import LogFetcher, GammaApiClient, ResolutionFetcher, CtfPositionFetcher
 from ..processors import (
     EventDecoder, extract_trades,
     load_token_mapping, find_missing_tokens, save_preview_csv,
     clean_users, clean_trades, clean_users_df, clean_trades_df,
-    ResolutionDecoder,
+    ResolutionDecoder, CtfPositionDecoder,
 )
 
 logger = logging.getLogger(__name__)
@@ -1340,6 +1341,179 @@ def cmd_fetch_resolutions(args):
         signal.signal(signal.SIGTERM, original_sigterm)
 
 
+def cmd_fetch_positions(args):
+    """Fetch CTF position-change events (TransferSingle/Batch, Split/Merge/Redemption).
+
+    These events together are the complete on-chain record of any wallet's
+    Polymarket position state. Volume is high — ~280 events per Polygon block
+    on average — so default batch_size is smaller than the orderfilled crawler.
+    """
+    import signal
+
+    MAX_BLOCKS = 1_000_000
+    MIN_BLOCK = 1
+
+    if args.blocks is not None and (args.blocks <= 0 or args.blocks > MAX_BLOCKS):
+        logger.error(f"--blocks out of range (1..{MAX_BLOCKS}): {args.blocks}")
+        return
+    if args.range is not None:
+        s_r, e_r = args.range
+        if s_r < MIN_BLOCK or e_r < MIN_BLOCK or s_r > e_r:
+            logger.error(f"Invalid --range {s_r} {e_r}")
+            return
+        if e_r - s_r + 1 > MAX_BLOCKS:
+            logger.error(f"--range exceeds {MAX_BLOCKS} blocks")
+            return
+
+    fetcher = CtfPositionFetcher(use_alchemy=args.alchemy, rpc_url=getattr(args, 'rpc_url', None))
+    decoder = CtfPositionDecoder()
+
+    def _last_block() -> int:
+        if STATE_FILE.exists():
+            try:
+                with open(STATE_FILE) as f:
+                    return int(json.load(f).get('fetch_positions', {}).get('last_block', 0))
+            except Exception:
+                return 0
+        return 0
+
+    def _save_last_block(b: int):
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state = {}
+        if STATE_FILE.exists():
+            try:
+                with open(STATE_FILE) as f:
+                    state = json.load(f)
+            except Exception:
+                pass
+        state['fetch_positions'] = {
+            'last_block': b,
+            'updated_at': datetime.now().isoformat(),
+        }
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=2)
+
+    if args.continue_from:
+        last = _last_block()
+        start = (last + 1) if last > 0 else fetcher.get_latest_block() - 1000
+        end = fetcher.get_latest_block()
+    elif args.blocks:
+        end = fetcher.get_latest_block()
+        start = end - args.blocks + 1
+    elif args.range:
+        start, end = args.range
+    else:
+        logger.error("Please specify --blocks, --range, or --continue")
+        return
+
+    if start > end:
+        logger.info("No new blocks")
+        return
+
+    logger.info(f"Fetching CTF positions for blocks {start} - {end} (total {end - start + 1})")
+    DATASET_DIR.mkdir(parents=True, exist_ok=True)
+    LATEST_RESULT_DIR.mkdir(parents=True, exist_ok=True)
+
+    stop_requested = False
+
+    def signal_handler(signum, frame):
+        nonlocal stop_requested
+        logger.warning(f"Received exit signal ({signum}); finishing current batch before shutdown.")
+        stop_requested = True
+
+    original_sigint = signal.signal(signal.SIGINT, signal_handler)
+    original_sigterm = signal.signal(signal.SIGTERM, signal_handler)
+
+    session_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    session_file = DATASET_DIR / f'ctf_positions_session_{session_ts}.parquet'
+
+    writer = None
+    # ~280 events per block — keep batches small to avoid huge RPC responses.
+    batch_size = getattr(args, 'batch_size', 50) or 50
+    last_saved_block = start - 1
+    total_rows = 0
+    failed_blocks_file = DATA_DIR / f'failed_blocks_positions_{session_ts}.txt'
+    failed_count = 0
+
+    def record_failed(s, e):
+        nonlocal failed_count
+        with open(failed_blocks_file, 'a') as f:
+            f.write(f"{s}-{e}\n")
+        failed_count += 1
+        logger.warning(f"Recorded failed CTF positions range: {s}-{e}")
+
+    try:
+        current = start
+        while current <= end:
+            if stop_requested:
+                break
+            batch_end = min(current + batch_size - 1, end)
+            logs = fetcher.fetch_range_in_batches(current, batch_end, batch_size=batch_size)
+            if logs is None:
+                record_failed(current, batch_end)
+                current = batch_end + 1
+                continue
+
+            if logs:
+                rows = decoder.decode_batch(logs)
+                if rows:
+                    df = pd.DataFrame(rows)
+                    table = pa.Table.from_pandas(df, preserve_index=False)
+                    if writer is None:
+                        writer = pq.ParquetWriter(str(session_file), table.schema, compression='snappy')
+                    writer.write_table(table)
+                    total_rows += len(rows)
+                    df.tail(1000).to_csv(CTF_POSITIONS_PREVIEW_FILE, index=False)
+                    logger.info(
+                        f"Blocks {current}-{batch_end}: +{len(rows)} position rows "
+                        f"(running total {total_rows:,})"
+                    )
+
+            last_saved_block = batch_end
+            current = batch_end + 1
+            _save_last_block(last_saved_block)
+
+        if writer is not None:
+            writer.close()
+
+        if total_rows > 0 and getattr(args, 'merge', False):
+            logger.info("Merging session into ctf_positions.parquet...")
+            if CTF_POSITIONS_FILE.exists():
+                main_table = pq.read_table(CTF_POSITIONS_FILE)
+                new_table = pq.read_table(session_file)
+                combined = pa.concat_tables([main_table, new_table], promote_options='default')
+                pq.write_table(combined, CTF_POSITIONS_FILE, compression='snappy')
+                session_file.unlink()
+            else:
+                import shutil
+                shutil.move(str(session_file), str(CTF_POSITIONS_FILE))
+            logger.info(f"Merged into {CTF_POSITIONS_FILE}")
+        elif total_rows > 0:
+            logger.info(f"Wrote {total_rows} rows to {session_file} (use --merge to merge)")
+        else:
+            logger.info("No CTF position events in the requested range")
+            if session_file.exists() and session_file.stat().st_size == 0:
+                session_file.unlink()
+
+        if failed_count > 0:
+            logger.warning(
+                f"{failed_count} CTF position block ranges failed; recorded in {failed_blocks_file}"
+            )
+    except Exception as e:
+        logger.error(f"fetch-positions failed: {e}")
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:
+                pass
+        if last_saved_block >= start:
+            _save_last_block(last_saved_block)
+        raise
+    finally:
+        signal.signal(signal.SIGINT, original_sigint)
+        signal.signal(signal.SIGTERM, original_sigterm)
+
+
 def cmd_merge_sessions(args):
     """Merge all session files into the main files"""
     import glob as glob_module
@@ -1469,6 +1643,20 @@ def main():
     p_res.add_argument('-m', '--merge', action='store_true',
                        help='Merge the session file into resolutions.parquet')
 
+    # fetch-positions
+    p_pos = subparsers.add_parser('fetch-positions',
+                                   help='Fetch CTF position-change events (Transfer/Split/Merge/Redemption)')
+    p_pos.add_argument('-b', '--blocks', type=int, help='Most recent N blocks')
+    p_pos.add_argument('-r', '--range', nargs=2, type=int, metavar=('START', 'END'))
+    p_pos.add_argument('-c', '--continue', dest='continue_from', action='store_true')
+    p_pos.add_argument('-a', '--alchemy', action='store_true')
+    p_pos.add_argument('--rpc-url', dest='rpc_url', default=None,
+                       help='Override RPC endpoint (useful for archive nodes)')
+    p_pos.add_argument('--batch-size', type=int, default=50,
+                       help='Blocks per RPC request; ~280 events/block so keep small (default 50)')
+    p_pos.add_argument('-m', '--merge', action='store_true',
+                       help='Merge the session file into ctf_positions.parquet')
+
     # merge-sessions
     p8 = subparsers.add_parser('merge-sessions', help='Merge all session files into the main files')
 
@@ -1497,6 +1685,8 @@ def main():
         cmd_merge_sessions(args)
     elif args.command == 'fetch-resolutions':
         cmd_fetch_resolutions(args)
+    elif args.command == 'fetch-positions':
+        cmd_fetch_positions(args)
     else:
         parser.print_help()
 
