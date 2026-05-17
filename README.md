@@ -77,6 +77,7 @@ We provide **107GB of trading data** from Polymarket containing **1.1 billion re
 | `quant.parquet` | 21GB | 170.3M | Clean market data with unified YES perspective |
 | `users.parquet` | 23GB | 340.6M | User behavior data split by maker/taker roles |
 | `resolutions.parquet` | — | — | CTF market creation + final payout vectors (NEW) |
+| `ctf_positions.parquet` | — | — | All CTF position changes: transfers, splits, merges, redemptions (NEW) |
 
 **Total**: 107GB, 1.1 billion records
 
@@ -353,6 +354,60 @@ python -m polymarket.cli fetch-resolutions --range 80000000 80100000 \
 python -m polymarket.cli fetch-resolutions --continue --merge
 ```
 
+### ctf_positions.parquet - On-Chain Position Changes
+
+Every position movement on Polymarket — not just the trades. Captures all five
+CTF events that move position tokens: ERC-1155 `TransferSingle` /
+`TransferBatch` (atomic transfers, including off-exchange ones), and the
+categorical `PositionSplit` / `PositionsMerge` / `PayoutRedemption` events
+(mints from collateral, burns into collateral, burns at settlement).
+
+**Why this dataset:** trades alone miss off-exchange transfers, airdrops,
+proxy-wallet funding, splits/merges, and redemptions. Reconstructing a
+wallet's true position state is impossible without these events. Together
+with `orderfilled.parquet` this gives the full picture of any wallet on
+Polymarket.
+
+**Volume:** ~280 events / block (~540 rows / block after exploding
+`TransferBatch`). Default `--batch-size 50` keeps each RPC response
+manageable; raise it for archive RPCs that allow larger ranges.
+
+**Schema:**
+```python
+{
+    'block_number': int,             # Block where the event was emitted
+    'transaction_hash': str,         # Tx that contained the event
+    'log_index': int,                # Log position in the tx
+    'sub_index': int,                # 0 for single events; 0..N-1 within an exploded TransferBatch
+    'timestamp': int,                # Unix timestamp
+    'datetime': str,                 # Human-readable timestamp
+    'event_name': str,               # TransferSingle|TransferBatch|PositionSplit|PositionsMerge|PayoutRedemption
+    'operator': str,                 # ERC-1155 operator (transfers only; '' otherwise)
+    'from_address': str,             # Transfer sender ('' for splits/merges/redemptions)
+    'to_address': str,               # Transfer recipient ('' for splits/merges/redemptions)
+    'actor': str,                    # Stakeholder (Split/Merge) or redeemer (Redemption); '' for transfers
+    'collateral_token': str,         # Underlying ERC-20 (usually USDC.e); populated for ops
+    'parent_collection_id': str,     # CTF parent collection (ops only)
+    'condition_id': str,             # CTF conditionId (ops only)
+    'index_sets': list[int],         # partition (Split/Merge) or indexSets (Redemption)
+    'position_id': str,              # ERC-1155 token id (uint256 as decimal string); '' for ops
+    'amount': str,                   # uint256 as decimal string — token amount, split/merge amount, or redemption payout
+}
+```
+
+**Fetching:**
+```bash
+# Most recent 1,000 blocks (positions are higher volume — use a small batch size)
+python -m polymarket.cli fetch-positions --blocks 1000 --batch-size 50 --merge
+
+# Specific historical range via an archive RPC
+python -m polymarket.cli fetch-positions --range 80000000 80050000 \
+    --rpc-url https://polygon.drpc.org --batch-size 25 --merge
+
+# Continue from the last checkpoint
+python -m polymarket.cli fetch-positions --continue --merge
+```
+
 See [DATA_DESCRIPTION.md](polymarket_data/DATA_DESCRIPTION.md) for complete schema documentation.
 
 ## Data Processing Pipeline
@@ -492,6 +547,9 @@ python -m polymarket.cli fetch-onchain --continue
 
 # Fetch CTF market creation + resolution events
 python -m polymarket.cli fetch-resolutions --blocks 100000 --merge
+
+# Fetch CTF position-change events (transfers + splits + merges + redemptions)
+python -m polymarket.cli fetch-positions --blocks 1000 --batch-size 50 --merge
 
 # Process data
 python -m polymarket.cli process

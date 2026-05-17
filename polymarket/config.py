@@ -25,12 +25,14 @@ MARKETS_FILE = DATASET_DIR / 'markets.parquet'
 MISSING_MARKETS_FILE = DATASET_DIR / 'missing_markets.parquet'
 TRADES_OUTPUT_FILE = DATASET_DIR / 'trades.parquet'
 RESOLUTIONS_FILE = DATASET_DIR / 'resolutions.parquet'
+CTF_POSITIONS_FILE = DATASET_DIR / 'ctf_positions.parquet'
 
 # CSV preview files (stored in data/latest_result/)
 MARKETS_PREVIEW_FILE = LATEST_RESULT_DIR / 'markets.csv'
 ORDERFILLED_PREVIEW_FILE = LATEST_RESULT_DIR / 'orderfilled.csv'
 TRADES_PREVIEW_FILE = LATEST_RESULT_DIR / 'trades.csv'
 RESOLUTIONS_PREVIEW_FILE = LATEST_RESULT_DIR / 'resolutions.csv'
+CTF_POSITIONS_PREVIEW_FILE = LATEST_RESULT_DIR / 'ctf_positions.csv'
 
 # Cleaned data directory (stored in data/data_clean/)
 DATA_CLEAN_DIR = DATA_DIR / 'data_clean'
@@ -116,11 +118,29 @@ CONDITION_PREPARATION_TOPIC = '0xab3760c3bd2bb38b5bcf54dc79802ed67338b4cf29f3054
 # keccak256("ConditionResolution(bytes32,address,bytes32,uint256,uint256[])")
 CONDITION_RESOLUTION_TOPIC = '0xb44d84d3289691f71497564b85d4233648d9dbae8cbdbb4329f301c3a0185894'
 
+# ERC-1155 + CTF position-change events on the same CTF contract.
+# Verified against on-chain logs.
+# keccak256("TransferSingle(address,address,address,uint256,uint256)")
+TRANSFER_SINGLE_TOPIC = '0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62'
+# keccak256("TransferBatch(address,address,address,uint256[],uint256[])")
+TRANSFER_BATCH_TOPIC = '0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb'
+# keccak256("PositionSplit(address,address,bytes32,bytes32,uint256[],uint256)")
+POSITION_SPLIT_TOPIC = '0x2e6bb91f8cbcda0c93623c54d0403a43514fabc40084ec96b6d5379a74786298'
+# keccak256("PositionsMerge(address,address,bytes32,bytes32,uint256[],uint256)")
+POSITIONS_MERGE_TOPIC = '0x6f13ca62553fcc2bcd2372180a43949c1e4cebba603901ede2f4e14f36b282ca'
+# keccak256("PayoutRedemption(address,address,bytes32,bytes32,uint256[],uint256)")
+PAYOUT_REDEMPTION_TOPIC = '0x2682012a4a4f1973119f1c9b90745d1bd91fa2bab387344f044cb3586864d18d'
+
 # All event signatures the project knows how to decode.
 EVENT_SIGNATURES = {
     'OrderFilled': 'd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6',
     'ConditionPreparation': 'ab3760c3bd2bb38b5bcf54dc79802ed67338b4cf29f3054ded67ed24661e4177',
     'ConditionResolution': 'b44d84d3289691f71497564b85d4233648d9dbae8cbdbb4329f301c3a0185894',
+    'TransferSingle': 'c3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62',
+    'TransferBatch': '4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb',
+    'PositionSplit': '2e6bb91f8cbcda0c93623c54d0403a43514fabc40084ec96b6d5379a74786298',
+    'PositionsMerge': '6f13ca62553fcc2bcd2372180a43949c1e4cebba603901ede2f4e14f36b282ca',
+    'PayoutRedemption': '2682012a4a4f1973119f1c9b90745d1bd91fa2bab387344f044cb3586864d18d',
 }
 
 
