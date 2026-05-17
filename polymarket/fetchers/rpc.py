@@ -37,24 +37,59 @@ class PolygonRpcClient:
     def get_latest_block(self) -> int:
         return self.w3.eth.block_number
 
-    def get_logs(self, start_block: int, end_block: int) -> Optional[List[Dict[str, Any]]]:
-        """获取区块范围内的 OrderFilled 日志
+    # 重试参数
+    GET_LOGS_MAX_RETRIES = 5
+    GET_LOGS_BACKOFF_BASE = 1.5
+    GET_LOGS_MIN_RANGE_FOR_SPLIT = 2
 
-        返回:
-            List[Dict]: 成功时返回日志列表（可能为空）
-            None: RPC 请求失败时返回 None
-        """
+    def _get_logs_once(self, start_block: int, end_block: int) -> Optional[List[Dict[str, Any]]]:
+        """单次 RPC 调用获取日志，不重试。返回 None 表示请求异常。"""
         try:
             logs = self.w3.eth.get_logs({
                 'fromBlock': start_block,
                 'toBlock': end_block,
                 'address': self.contract_addresses,
-                'topics': [ORDER_FILLED_TOPIC]  # 只获取 OrderFilled 事件
+                'topics': [ORDER_FILLED_TOPIC]
             })
             return [dict(log) for log in logs]
         except Exception as e:
-            logger.error(f"获取日志失败: {e}")
-            return None  # 返回 None 表示请求失败，区分于空列表（无数据）
+            logger.warning(f"get_logs({start_block}-{end_block}) 失败: {e}")
+            return None
+
+    def get_logs(self, start_block: int, end_block: int) -> Optional[List[Dict[str, Any]]]:
+        """获取区块范围内的 OrderFilled 日志
+
+        关键修复（issue #1）：早期版本一次 RPC 失败就把整个批次（默认 100 个区块）
+        标记为失败，导致数据集出现连续 100 个区块全部缺失的现象。现在策略：
+        1. 指数退避重试 GET_LOGS_MAX_RETRIES 次
+        2. 如果仍然失败且区块范围 >= 2，则二分递归，避免一个坏区块拖垮整批
+        3. 只有当单个区块也持续失败时才返回 None
+
+        返回:
+            List[Dict]: 成功时返回日志列表（可能为空）
+            None: 经过重试和二分后仍然失败
+        """
+        for attempt in range(self.GET_LOGS_MAX_RETRIES):
+            logs = self._get_logs_once(start_block, end_block)
+            if logs is not None:
+                return logs
+            if attempt < self.GET_LOGS_MAX_RETRIES - 1:
+                sleep_s = self.GET_LOGS_BACKOFF_BASE ** attempt
+                logger.info(f"重试 get_logs({start_block}-{end_block}) 第 {attempt + 2} 次，等待 {sleep_s:.1f}s")
+                time.sleep(sleep_s)
+
+        # 持续失败 — 尝试二分这个区间，避免一个坏区块拖垮整批
+        if end_block > start_block and (end_block - start_block + 1) >= self.GET_LOGS_MIN_RANGE_FOR_SPLIT:
+            mid = (start_block + end_block) // 2
+            logger.warning(f"区间 {start_block}-{end_block} 持续失败，二分为 {start_block}-{mid} 与 {mid + 1}-{end_block}")
+            left = self.get_logs(start_block, mid)
+            right = self.get_logs(mid + 1, end_block)
+            if left is None or right is None:
+                return None
+            return left + right
+
+        logger.error(f"区块 {start_block}-{end_block} 在所有重试后仍失败")
+        return None
 
     def get_block_timestamp(self, block_number: int) -> int:
         """获取区块时间戳"""

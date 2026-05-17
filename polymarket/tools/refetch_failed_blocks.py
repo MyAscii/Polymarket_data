@@ -94,6 +94,17 @@ def main():
     failed_count = 0
     success_count = 0
 
+    # 关键修复（issue #1）：原版补爬器如果二次 RPC 失败，只是 logger.error
+    # 然后丢弃这些区块，导致数据集永久缺失。这里改为把失败的范围写入
+    # 一个新的 failed_blocks 文件，用户可以多次迭代直到收敛。
+    remaining_file = failed_blocks_file.with_name(
+        failed_blocks_file.stem.replace('failed_blocks_', 'failed_blocks_remaining_') + '.txt'
+    )
+
+    def record_remaining(block_start, block_end):
+        with open(remaining_file, 'a') as fh:
+            fh.write(f"{block_start}-{block_end}\n")
+
     # 逐个补爬
     for idx, (start, end) in enumerate(failed_ranges, 1):
         logger.info(f"[{idx}/{len(failed_ranges)}] 补爬区块 {start}-{end}")
@@ -101,7 +112,8 @@ def main():
         logs = fetcher.fetch_range_in_batches(start, end)
 
         if logs is None:
-            logger.error(f"  ✗ RPC 请求失败")
+            logger.error(f"  ✗ RPC 请求失败 — 记录到 {remaining_file.name}")
+            record_remaining(start, end)
             failed_count += 1
             continue
 
@@ -166,6 +178,10 @@ def main():
         users_combined = pd.concat(all_users, ignore_index=True)
         users_combined.to_parquet(users_file, index=False, compression='snappy')
         logger.info(f"  ✓ 已保存 {len(users_combined)} 条 users 到: {users_file}")
+
+    if failed_count > 0:
+        logger.warning(f"⚠️ 仍有 {failed_count} 个区块范围未恢复，已写入: {remaining_file}")
+        logger.warning(f"   可以再次运行: python -m polymarket.tools.refetch_failed_blocks {remaining_file}")
 
     logger.info(f"\n全部完成!")
 
