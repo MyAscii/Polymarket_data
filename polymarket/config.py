@@ -84,31 +84,56 @@ OUTPUT_COLUMNS = [
 
 # ============== Contract addresses ==============
 
-# Default exchange contract addresses
+# V1 exchange contracts (legacy — frozen for new trading at the V2 cutover but
+# still emit events as legacy markets settle).
 _DEFAULT_CTF_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E'
 _DEFAULT_NEGRISK_CTF_EXCHANGE = '0xC5d563A36AE78145C45a50134d48A1215220f80a'
 
-# Read from environment variables to support customization
+# V2 exchange contracts (live trading post-cutover).
+# Verified against live on-chain logs.
+_DEFAULT_CTF_EXCHANGE_V2 = '0xE111180000d2663C0091e4f400237545B87B996B'
+_DEFAULT_NEGRISK_CTF_EXCHANGE_V2 = '0xe2222d279d744050d28e00520010520000310F59'
+
+# Environment-variable overrides for customization.
 _CTF_EXCHANGE = os.getenv('POLYMARKET_CTF_EXCHANGE', _DEFAULT_CTF_EXCHANGE)
 _NEGRISK_CTF_EXCHANGE = os.getenv('POLYMARKET_NEGRISK_CTF_EXCHANGE', _DEFAULT_NEGRISK_CTF_EXCHANGE)
+_CTF_EXCHANGE_V2 = os.getenv('POLYMARKET_CTF_EXCHANGE_V2', _DEFAULT_CTF_EXCHANGE_V2)
+_NEGRISK_CTF_EXCHANGE_V2 = os.getenv('POLYMARKET_NEGRISK_CTF_EXCHANGE_V2', _DEFAULT_NEGRISK_CTF_EXCHANGE_V2)
 
-# Listen only to the two exchange contracts (sources of OrderFilled events)
+# All exchange contracts the OrderFilled crawler watches. The address->name map
+# is used by the decoder to label each row with its source contract.
 POLYMARKET_CONTRACTS = {
     'CTF_EXCHANGE': _CTF_EXCHANGE,
     'NEGRISK_CTF_EXCHANGE': _NEGRISK_CTF_EXCHANGE,
+    'CTF_EXCHANGE_V2': _CTF_EXCHANGE_V2,
+    'NEGRISK_CTF_EXCHANGE_V2': _NEGRISK_CTF_EXCHANGE_V2,
+}
+
+# Map each exchange address (lowercase) to its protocol version.
+EXCHANGE_VERSION = {
+    _CTF_EXCHANGE.lower(): 'v1',
+    _NEGRISK_CTF_EXCHANGE.lower(): 'v1',
+    _CTF_EXCHANGE_V2.lower(): 'v2',
+    _NEGRISK_CTF_EXCHANGE_V2.lower(): 'v2',
 }
 
 # Set of exchange addresses (lowercase, used for filtering)
-EXCHANGE_ADDRESSES = {
-    _CTF_EXCHANGE.lower(),
-    _NEGRISK_CTF_EXCHANGE.lower()
-}
+EXCHANGE_ADDRESSES = set(EXCHANGE_VERSION.keys())
 
 
 # ============== Event signatures ==============
 
-# OrderFilled event signature (with 0x prefix)
+# V1 OrderFilled (keccak256 of the actual V1 ABI — single uint256 fee):
+#   OrderFilled(bytes32,address,address,uint256,uint256,uint256,uint256,uint256)
 ORDER_FILLED_TOPIC = '0xd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6'
+ORDER_FILLED_TOPIC_V1 = ORDER_FILLED_TOPIC
+
+# V2 OrderFilled (different ABI — adds side, builder, metadata):
+#   OrderFilled(bytes32,address,address,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32)
+ORDER_FILLED_TOPIC_V2 = '0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee'
+
+# Both topics — pass as the inner list of topic0 alternatives to eth_getLogs.
+ORDER_FILLED_TOPICS = [ORDER_FILLED_TOPIC_V1, ORDER_FILLED_TOPIC_V2]
 
 # Conditional Token Framework (CTF) on Polygon — market creation + resolution.
 # Verified against on-chain logs at the CTF contract.
@@ -134,6 +159,7 @@ PAYOUT_REDEMPTION_TOPIC = '0x2682012a4a4f1973119f1c9b90745d1bd91fa2bab387344f044
 # All event signatures the project knows how to decode.
 EVENT_SIGNATURES = {
     'OrderFilled': 'd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6',
+    'OrderFilledV2': 'd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee',
     'ConditionPreparation': 'ab3760c3bd2bb38b5bcf54dc79802ed67338b4cf29f3054ded67ed24661e4177',
     'ConditionResolution': 'b44d84d3289691f71497564b85d4233648d9dbae8cbdbb4329f301c3a0185894',
     'TransferSingle': 'c3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62',
