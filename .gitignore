@@ -67,3 +67,6 @@ polymarket_data/*.parquet
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Tooling
+.claude/
