@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-持续获取最新区块数据的脚本
+Script for continuously fetching the latest block data.
 
-功能：
-1. 持续监控区块链，获取最新的区块数据
-2. 自动切换模式：批量获取历史区块 -> 实时跟踪新区块（2秒一个）
-3. 流式追加写入到 4 个 parquet 文件：orderfilled, trades, users, quant
-4. 优雅退出，确保文件完整性
+Features:
+1. Continuously monitor the blockchain and fetch the latest block data
+2. Automatically switch modes: batch historical fetching -> real-time tracking of new blocks (one every 2 seconds)
+3. Stream appends into 4 parquet files: orderfilled, trades, users, quant
+4. Exit gracefully to preserve file integrity
 
-用法：
-    # 在后台运行
+Usage:
+    # Run in the background
     nohup python scripts/continuous_fetch.py > logs/continuous_fetch.log 2>&1 &
 
-    # 停止（会优雅退出）
+    # Stop gracefully
     kill -SIGTERM <PID>
 
-    # 自定义输出目录
+    # Custom output directory
     python scripts/continuous_fetch.py --output-dir data/realtime
 """
 import os
@@ -29,7 +29,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-# 添加项目根目录到路径
+# Add the project root to the path.
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 
 class ContinuousWriter:
-    """持续追加写入 parquet 的管理类"""
+    """Manager for continuously appending to parquet files."""
 
     def __init__(self, output_dir, session_timestamp, preview_size=1000):
         self.output_dir = Path(output_dir)
@@ -61,7 +61,7 @@ class ContinuousWriter:
         self.session_timestamp = session_timestamp
         self.preview_size = preview_size
 
-        # 4个输出文件（带时间戳）
+        # Four output files with timestamps.
         self.files = {
             'orderfilled': self.output_dir / f'orderfilled_{session_timestamp}.parquet',
             'trades': self.output_dir / f'trades_{session_timestamp}.parquet',
@@ -69,7 +69,7 @@ class ContinuousWriter:
             'users': self.output_dir / f'users_{session_timestamp}.parquet',
         }
 
-        # CSV 预览文件（固定名称，实时更新）
+        # CSV preview files with fixed names, updated in real time.
         preview_dir = self.output_dir.parent / 'latest_result'
         preview_dir.mkdir(parents=True, exist_ok=True)
         self.csv_files = {
@@ -79,7 +79,7 @@ class ContinuousWriter:
             'users': preview_dir / 'users.csv',
         }
 
-        # ParquetWriter 实例
+        # ParquetWriter instances.
         self.writers = {
             'orderfilled': None,
             'trades': None,
@@ -87,7 +87,7 @@ class ContinuousWriter:
             'users': None,
         }
 
-        # 记录行数
+        # Row counters.
         self.row_counts = {
             'orderfilled': 0,
             'trades': 0,
@@ -95,7 +95,7 @@ class ContinuousWriter:
             'users': 0,
         }
 
-        # 缓存最近的数据（用于 CSV 预览）
+        # Cache recent data for CSV previews.
         self.recent_data = {
             'orderfilled': [],
             'trades': [],
@@ -103,18 +103,18 @@ class ContinuousWriter:
             'users': [],
         }
 
-        # 输出文件信息
-        logger.info(f"本次会话文件:")
+        # Output file information.
+        logger.info("Files for this session:")
         for name, file_path in self.files.items():
             logger.info(f"  {name}: {file_path.name}")
-        logger.info(f"CSV 预览: data/latest_result/ (最新 {preview_size} 条)")
+        logger.info(f"CSV preview: data/latest_result/ (latest {preview_size} rows)")
 
     def write_batch(self, data_type, data):
-        """追加写入一批数据"""
+        """Append a batch of data."""
         if data is None or len(data) == 0:
             return
 
-        # 转换为 DataFrame
+        # Convert to DataFrame.
         if isinstance(data, list):
             df = pd.DataFrame(data)
         elif isinstance(data, pd.DataFrame):
@@ -126,106 +126,106 @@ class ContinuousWriter:
             return
 
         try:
-            # 转换为 Arrow Table
+            # Convert to Arrow Table.
             table = pa.Table.from_pandas(df)
 
-            # 初始化 writer（如果还没有）
+            # Initialize the writer if needed.
             if self.writers[data_type] is None:
                 file_path = self.files[data_type]
 
-                # 创建新文件
+                # Create a new file.
                 self.writers[data_type] = pq.ParquetWriter(
                     file_path,
                     table.schema,
                     compression='snappy',
                 )
-                logger.info(f"✓ 创建新文件 {data_type}: {file_path.name}")
+                logger.info(f"✓ Created new file {data_type}: {file_path.name}")
 
-            # 写入数据
+            # Write data.
             self.writers[data_type].write_table(table)
             self.row_counts[data_type] += len(df)
 
-            # 更新缓存（保留最新的 preview_size 条）
+            # Update cache and keep the most recent preview_size rows.
             if isinstance(data, list):
                 self.recent_data[data_type].extend(data)
             else:
                 self.recent_data[data_type].extend(df.to_dict('records'))
 
-            # 只保留最新的 N 条
+            # Keep only the latest N rows.
             if len(self.recent_data[data_type]) > self.preview_size:
                 self.recent_data[data_type] = self.recent_data[data_type][-self.preview_size:]
 
-            # 更新 CSV 预览
+            # Update CSV preview.
             self._update_csv_preview(data_type)
 
         except Exception as e:
-            logger.error(f"写入 {data_type} 失败: {e}")
+            logger.error(f"Failed to write {data_type}: {e}")
             raise
 
     def _update_csv_preview(self, data_type):
-        """更新 CSV 预览文件"""
+        """Update the CSV preview file."""
         try:
             if len(self.recent_data[data_type]) > 0:
                 df = pd.DataFrame(self.recent_data[data_type])
                 csv_file = self.csv_files[data_type]
                 df.to_csv(csv_file, index=False)
         except Exception as e:
-            logger.warning(f"更新 CSV 预览失败 ({data_type}): {e}")
+            logger.warning(f"Failed to update CSV preview ({data_type}): {e}")
 
     def close_all(self):
-        """关闭所有 writer"""
-        logger.info("正在关闭所有文件...")
+        """Close all writers."""
+        logger.info("Closing all files...")
         for name, writer in self.writers.items():
             if writer is not None:
                 try:
                     writer.close()
-                    logger.info(f"  ✓ {name}: {self.row_counts[name]:,} 行")
+                    logger.info(f"  ✓ {name}: {self.row_counts[name]:,} rows")
                 except Exception as e:
-                    logger.error(f"  关闭 {name} 失败: {e}")
-        logger.info("所有文件已关闭")
+                    logger.error(f"  Failed to close {name}: {e}")
+        logger.info("All files closed")
 
 
 class ContinuousFetcher:
-    """持续获取区块数据"""
+    """Continuously fetch block data."""
 
     def __init__(self, output_dir, batch_size=100):
         self.output_dir = Path(output_dir)
         self.batch_size = batch_size
 
-        # 状态文件
+        # State file.
         self.state_file = self.output_dir / 'continuous_state.json'
 
-        # 生成本次会话的时间戳
+        # Generate the timestamp for this session.
         self.session_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-        # Writer
+        # Writer.
         self.writer = ContinuousWriter(output_dir, self.session_timestamp)
 
-        # 初始化 fetcher 和 decoder
+        # Initialize fetcher and decoder.
         self.fetcher = LogFetcher()
         self.decoder = EventDecoder()
 
-        # 加载 token 映射
+        # Load token mappings.
         self.token_mapping = load_token_mapping(MARKETS_FILE)
         if MISSING_MARKETS_FILE.exists():
             self.token_mapping.update(load_token_mapping(MISSING_MARKETS_FILE))
-        logger.info(f"加载 {len(self.token_mapping)} 个 token 映射")
+        logger.info(f"Loaded {len(self.token_mapping)} token mappings")
 
-        # 加载状态
+        # Load state.
         self.last_processed_block = self.load_state()
 
-        # 信号处理
+        # Signal handling.
         self.should_stop = False
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
 
     def _signal_handler(self, signum, frame):
-        """处理停止信号"""
-        logger.info(f"\n收到停止信号 ({signum})，准备安全退出...")
+        """Handle stop signals."""
+        logger.info(f"\nReceived stop signal ({signum}), preparing for a safe shutdown...")
         self.should_stop = True
 
     def load_state(self):
-        """加载上次处理到的区块号"""
+        """Load the last processed block number."""
         if self.state_file.exists():
             import json
             try:
@@ -237,7 +237,7 @@ class ContinuousFetcher:
         return None
 
     def save_state(self, block_number):
-        """保存当前处理到的区块号"""
+        """Save the current processed block number."""
         import json
         try:
             with open(self.state_file, 'w') as f:
@@ -246,46 +246,46 @@ class ContinuousFetcher:
                     'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }, f, indent=2)
         except Exception as e:
-            logger.error(f"保存状态失败: {e}")
+            logger.error(f"Failed to save state: {e}")
 
     def get_latest_block(self):
-        """获取链上最新区块号"""
+        """Get the latest on-chain block number."""
         try:
             latest = self.fetcher.client.get_latest_block()
             return latest
         except Exception as e:
-            logger.error(f"获取最新区块失败: {e}")
+            logger.error(f"Failed to get the latest block: {e}")
             return None
 
     def fetch_and_process_range(self, start_block, end_block):
-        """获取并处理一个区块范围"""
+        """Fetch and process a block range."""
         try:
-            # 获取日志
+            # Fetch logs.
             logs = self.fetcher.fetch_range_in_batches(start_block, end_block)
             if logs is None or len(logs) == 0:
-                logger.info(f"区块 {start_block:,}-{end_block:,} 无数据")
+                logger.info(f"Block range {start_block:,}-{end_block:,} has no data")
                 return True
 
-            logger.info(f"  获取到 {len(logs)} 条日志")
+            logger.info(f"  Fetched {len(logs)} logs")
 
-            # 解码并格式化事件
+            # Decode and format events.
             decoded = [self.decoder.decode(log) for log in logs]
             events = [self.decoder.format_event(e) for e in decoded]
             if len(events) == 0:
-                logger.info(f"  解码后无数据")
+                logger.info("  No data after decoding")
                 return True
 
-            logger.info(f"  解码 {len(events)} 条事件")
+            logger.info(f"  Decoded {len(events)} events")
 
-            # 提取 trades
+            # Extract trades.
             trades = extract_trades(events)
-            logger.info(f"  提取 {len(trades)} 条交易")
+            logger.info(f"  Extracted {len(trades)} trades")
 
-            # 写入 orderfilled 和 trades
+            # Write orderfilled and trades.
             self.writer.write_batch('orderfilled', events)
             self.writer.write_batch('trades', trades)
 
-            # 清洗数据（仅当有交易数据时）
+            # Clean data only when trade data exists.
             if len(trades) > 0:
                 trades_df = pd.DataFrame(trades)
                 quant_df = clean_trades_df(trades_df)
@@ -293,34 +293,34 @@ class ContinuousFetcher:
                 self.writer.write_batch('quant', quant_df)
                 self.writer.write_batch('users', users_df)
 
-            logger.info(f"  ✓ 已写入所有数据")
+            logger.info("  ✓ Wrote all data")
             return True
 
         except Exception as e:
-            logger.error(f"处理区块 {start_block}-{end_block} 失败: {e}")
+            logger.error(f"Failed to process blocks {start_block}-{end_block}: {e}")
             return False
 
     def run(self):
-        """主循环：持续获取新区块"""
+        """Main loop: continuously fetch new blocks."""
         logger.info("\n" + "="*60)
-        logger.info("=== 持续获取模式启动 ===")
+        logger.info("=== Continuous fetch mode started ===")
         logger.info("="*60)
-        logger.info(f"输出目录: {self.output_dir}")
-        logger.info(f"批次大小: {self.batch_size} 个区块")
-        logger.info("按 Ctrl+C 或发送 SIGTERM 信号优雅退出")
+        logger.info(f"Output directory: {self.output_dir}")
+        logger.info(f"Batch size: {self.batch_size} blocks")
+        logger.info("Press Ctrl+C or send SIGTERM to exit gracefully")
         logger.info("="*60 + "\n")
 
-        # 确定起始区块
+        # Determine the starting block.
         if self.last_processed_block is None:
             latest_block = self.get_latest_block()
             if latest_block is None:
-                logger.error("无法获取最新区块，退出")
+                logger.error("Unable to get the latest block, exiting")
                 return
-            # 从最新区块往前 100 个区块开始
+            # Start 100 blocks behind the latest block.
             self.last_processed_block = latest_block - self.batch_size
-            logger.info(f"首次运行，从区块 {self.last_processed_block:,} 开始\n")
+            logger.info(f"First run, starting from block {self.last_processed_block:,}\n")
         else:
-            logger.info(f"继续从区块 {self.last_processed_block:,} 开始\n")
+            logger.info(f"Continuing from block {self.last_processed_block:,}\n")
 
         consecutive_errors = 0
         max_errors = 10
@@ -329,12 +329,12 @@ class ContinuousFetcher:
         try:
             while not self.should_stop:
                 try:
-                    # 获取最新区块
+                    # Get the latest block.
                     latest_block = self.get_latest_block()
                     if latest_block is None:
                         consecutive_errors += 1
                         if consecutive_errors >= max_errors:
-                            logger.error(f"连续 {max_errors} 次获取最新区块失败")
+                            logger.error(f"Failed to get the latest block {max_errors} times in a row")
                             break
                         time.sleep(5)
                         continue
@@ -342,76 +342,76 @@ class ContinuousFetcher:
                     consecutive_errors = 0
                     next_block = self.last_processed_block + 1
 
-                    # 检查是否有新区块
+                    # Check whether there are new blocks.
                     if next_block > latest_block:
-                        # 已经是最新了，等待 2 秒
+                        # Already up to date, wait 2 seconds.
                         if time.time() - last_log_time > 30:
-                            logger.info(f"[实时模式] 当前: {self.last_processed_block:,}, 最新: {latest_block:,}, 等待新区块...")
+                            logger.info(f"[Realtime mode] Current: {self.last_processed_block:,}, latest: {latest_block:,}, waiting for new blocks...")
                             last_log_time = time.time()
                         time.sleep(2)
                         continue
 
-                    # 计算要处理的范围
+                    # Compute the range to process.
                     blocks_behind = latest_block - self.last_processed_block
 
                     if blocks_behind >= self.batch_size:
-                        # 批量模式：一次处理 100 个区块
+                        # Batch mode: process 100 blocks at a time.
                         end_block = next_block + self.batch_size - 1
-                        logger.info(f"[批量模式] 处理 {next_block:,} - {end_block:,} (落后 {blocks_behind:,} 个区块)")
+                        logger.info(f"[Batch mode] Processing {next_block:,} - {end_block:,} (behind by {blocks_behind:,} blocks)")
                         success = self.fetch_and_process_range(next_block, end_block)
 
                         if success:
                             self.last_processed_block = end_block
                             self.save_state(end_block)
-                            logger.info(f"✓ 更新状态: {end_block:,}\n")
+                            logger.info(f"✓ Updated state: {end_block:,}\n")
                         else:
                             time.sleep(5)
                             continue
 
-                        # 继续下一批，不等待
+                        # Continue to the next batch without waiting.
                         time.sleep(0.5)
                     else:
-                        # 实时模式：一次处理 1 个区块
+                        # Realtime mode: process 1 block at a time.
                         end_block = next_block
-                        logger.info(f"[实时模式] 处理区块 {next_block:,} (最新: {latest_block:,})")
+                        logger.info(f"[Realtime mode] Processing block {next_block:,} (latest: {latest_block:,})")
                         success = self.fetch_and_process_range(next_block, end_block)
 
                         if success:
                             self.last_processed_block = end_block
                             self.save_state(end_block)
-                            logger.info(f"✓ 更新状态: {end_block:,}\n")
+                            logger.info(f"✓ Updated state: {end_block:,}\n")
                         else:
                             time.sleep(5)
                             continue
 
-                        # 实时模式：等待 2 秒
+                        # Realtime mode: wait 2 seconds.
                         last_log_time = time.time()
                         time.sleep(2)
 
                 except Exception as e:
-                    logger.error(f"循环错误: {e}")
+                    logger.error(f"Loop error: {e}")
                     consecutive_errors += 1
                     if consecutive_errors >= max_errors:
-                        logger.error(f"连续 {max_errors} 次错误，退出")
+                        logger.error(f"Encountered {max_errors} consecutive errors, exiting")
                         break
                     time.sleep(5)
 
         finally:
-            # 优雅退出
+            # Graceful shutdown.
             logger.info("\n" + "="*60)
-            logger.info("正在安全退出...")
+            logger.info("Shutting down safely...")
             self.writer.close_all()
             logger.info("="*60)
-            logger.info("=== 持续获取模式已安全退出 ===")
+            logger.info("=== Continuous fetch mode exited safely ===")
             logger.info("="*60 + "\n")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='持续获取最新区块数据')
+    parser = argparse.ArgumentParser(description='Continuously fetch the latest block data')
     parser.add_argument('--output-dir', type=str, default='data/continuous',
-                       help='输出目录，默认 data/continuous')
+                       help='Output directory, default: data/continuous')
     parser.add_argument('--batch-size', type=int, default=100,
-                       help='批量模式时每次获取的区块数，默认 100')
+                       help='Number of blocks fetched per batch in batch mode, default: 100')
 
     args = parser.parse_args()
 

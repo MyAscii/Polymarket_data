@@ -1,11 +1,11 @@
-# poly_onchain 依赖
-# 安装: conda activate python3.12 && pip install -r requirements.txt
+# poly_onchain dependencies
+# Install: conda activate python3.12 && pip install -r requirements.txt
 
-# 核心依赖
-web3>=6.0.0              # Polygon RPC 交互
-requests>=2.28.0         # HTTP 请求 (Gamma API)
-pandas>=2.0.0            # 数据处理
-pyarrow>=12.0.0          # Parquet 读写
+# Core dependencies
+web3>=6.0.0              # Polygon RPC interaction
+requests>=2.28.0         # HTTP requests (Gamma API)
+pandas>=2.0.0            # Data processing
+pyarrow>=12.0.0          # Parquet read/write
 
-# 可选依赖
-eth-abi>=4.0.0           # ABI 编解码（web3 已包含，单独列出以确保版本）
+# Optional dependencies
+eth-abi>=4.0.0           # ABI encoding/decoding (already included by web3, listed separately to pin the version)

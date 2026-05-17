@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Parquet 文件排序脚本 - 内存高效版本
-使用 DuckDB 外部排序，适合大文件处理
+Parquet sorting script - memory-efficient version.
+Uses DuckDB external sorting and is suitable for large files.
 
-用法:
-    # 直接指定输入输出文件路径
+Usage:
+    # Specify input and output file paths directly
     python scripts/sort_parquet.py users -i /path/to/users.parquet -o /path/to/users_sorted.parquet
     python scripts/sort_parquet.py quant -i /path/to/quant.parquet -o /path/to/quant_sorted.parquet
 
-    # 使用默认目录 (data/data_clean)
+    # Use the default directory (data/data_clean)
     python scripts/sort_parquet.py users
     python scripts/sort_parquet.py quant
 
-    # 测试模式 (只处理前100万行)
+    # Test mode (process only the first 1 million rows)
     python scripts/sort_parquet.py users -i /path/to/users.parquet -o /path/to/test.parquet --test
 
 cd /inspire/ssd/project/liyikang/wangzhengjie-253108090056/poly_onchain
@@ -27,14 +27,14 @@ nohup python scripts/sort_parquet.py quant \
     -o /inspire/hdd/project/liyikang/public/Polymarket_dataset/dataset_latest/quant_sorted.parquet \
     > logs/sort_quant.log 2>&1 &
 
-# 查看进度
+# View progress
 tail -f logs/sort_users.log
 
-参数说明:
-    users/quant   要排序的文件类型
-    -i/--input    输入文件路径 (完整路径)
-    -o/--output   输出文件路径 (完整路径)
-    --test        测试模式，只处理前100万行
+Arguments:
+    users/quant   file type to sort
+    -i/--input    input file path (full path)
+    -o/--output   output file path (full path)
+    --test        test mode, process only the first 1 million rows
 """
 
 import argparse
@@ -45,22 +45,22 @@ import gc
 import shutil
 from pathlib import Path
 
-# DuckDB 用于内存高效的外部排序
+# DuckDB is used for memory-efficient external sorting.
 import duckdb
 
 
 def log(msg: str):
-    """带时间戳的日志输出，立即 flush"""
+    """Timestamped log output with immediate flush."""
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 def get_temp_dir() -> str:
-    """获取临时目录 - 集群用 SSD，本地用项目目录"""
+    """Get the temporary directory: SSD on the cluster, project directory locally."""
     if os.path.exists('/inspire/ssd'):
-        # 集群：用 SSD 目录，避免 HDD IO 问题
+        # Cluster: use the SSD directory to avoid HDD I/O issues.
         temp_dir = '/inspire/ssd/project/liyikang/wangzhengjie-253108090056/.duckdb_temp'
     else:
-        # 本地：用项目目录
+        # Local: use the project directory.
         script_dir = os.path.dirname(os.path.abspath(__file__))
         temp_dir = os.path.join(script_dir, '..', '.duckdb_temp')
     temp_dir = os.path.abspath(temp_dir)
@@ -69,56 +69,56 @@ def get_temp_dir() -> str:
 
 
 def cleanup_temp(temp_dir: str):
-    """清理 DuckDB 临时文件"""
+    """Clean up DuckDB temporary files."""
     if os.path.exists(temp_dir):
         try:
             shutil.rmtree(temp_dir)
         except Exception as e:
-            log(f"清理临时目录失败: {e}")
+            log(f"Failed to clean temporary directory: {e}")
 
 
 def get_memory_limit_gb():
-    """获取可用内存的一半作为限制"""
+    """Use half of available memory as the limit."""
     try:
         import psutil
         available_gb = psutil.virtual_memory().available / (1024**3)
-        # 使用可用内存的 50%，最多 64GB (集群可能内存更大)
+        # Use 50% of available memory, up to 64GB.
         return min(available_gb * 0.5, 64)
     except ImportError:
-        return 8  # 默认 8GB
+        return 8  # Default: 8GB
 
 
 def sort_users_parquet(input_path: str, output_path: str, test_mode: bool = False):
     """
-    排序 users.parquet
-    排序优先级: 1. user, 2. timestamp
+    Sort `users.parquet`.
+    Sort priority: 1. user, 2. timestamp
     """
     log("=" * 60)
-    log("排序 users.parquet")
-    log(f"输入: {input_path}")
-    log(f"输出: {output_path}")
-    log(f"测试模式: {test_mode}")
+    log("Sorting users.parquet")
+    log(f"Input: {input_path}")
+    log(f"Output: {output_path}")
+    log(f"Test mode: {test_mode}")
     log("=" * 60)
 
     mem_limit = get_memory_limit_gb()
-    log(f"内存限制: {mem_limit:.1f} GB")
+    log(f"Memory limit: {mem_limit:.1f} GB")
 
     start_time = time.time()
 
-    # 获取临时文件夹
+    # Get temporary directory.
     temp_dir = get_temp_dir()
-    log(f"临时目录: {temp_dir}")
+    log(f"Temporary directory: {temp_dir}")
 
-    # 创建 DuckDB 连接，配置外部排序
+    # Create DuckDB connection and configure external sorting.
     con = duckdb.connect()
     con.execute(f"SET memory_limit = '{mem_limit:.0f}GB'")
     con.execute(f"SET temp_directory = '{temp_dir}'")
-    con.execute("SET preserve_insertion_order = false")  # 允许并行处理
+    con.execute("SET preserve_insertion_order = false")  # Allow parallel processing.
 
     try:
-        # 构建查询
+        # Build query.
         if test_mode:
-            # 测试模式：先限制行数再排序
+            # In test mode, limit rows first and then sort.
             query = f"""
                 COPY (
                     SELECT * FROM (
@@ -140,18 +140,18 @@ def sort_users_parquet(input_path: str, output_path: str, test_mode: bool = Fals
                 (FORMAT PARQUET, COMPRESSION 'zstd', ROW_GROUP_SIZE 100000)
             """
 
-        log("开始排序...")
+        log("Starting sort...")
         con.execute(query)
 
         elapsed = time.time() - start_time
 
-        # 验证输出
+        # Validate output.
         result = con.execute(f"SELECT COUNT(*) FROM read_parquet('{output_path}')").fetchone()
-        log(f"完成! 输出行数: {result[0]:,}")
-        log(f"耗时: {elapsed:.1f} 秒")
+        log(f"Done! Output rows: {result[0]:,}")
+        log(f"Elapsed: {elapsed:.1f} s")
 
-        # 显示排序后的样本
-        log("排序后前5行:")
+        # Show sorted sample rows.
+        log("First 5 rows after sorting:")
         samples = con.execute(f"""
             SELECT user, timestamp
             FROM read_parquet('{output_path}')
@@ -165,29 +165,29 @@ def sort_users_parquet(input_path: str, output_path: str, test_mode: bool = Fals
         del con
         gc.collect()
         cleanup_temp(temp_dir)
-        log("内存已释放")
+        log("Memory released")
 
 
 def sort_quant_parquet(input_path: str, output_path: str, test_mode: bool = False):
     """
-    排序 quant.parquet
-    排序优先级: 1. event_id, 2. market_id, 3. timestamp
+    Sort `quant.parquet`.
+    Sort priority: 1. event_id, 2. market_id, 3. timestamp
     """
     log("=" * 60)
-    log("排序 quant.parquet")
-    log(f"输入: {input_path}")
-    log(f"输出: {output_path}")
-    log(f"测试模式: {test_mode}")
+    log("Sorting quant.parquet")
+    log(f"Input: {input_path}")
+    log(f"Output: {output_path}")
+    log(f"Test mode: {test_mode}")
     log("=" * 60)
 
     mem_limit = get_memory_limit_gb()
-    log(f"内存限制: {mem_limit:.1f} GB")
+    log(f"Memory limit: {mem_limit:.1f} GB")
 
     start_time = time.time()
 
-    # 获取临时文件夹
+    # Get temporary directory.
     temp_dir = get_temp_dir()
-    log(f"临时目录: {temp_dir}")
+    log(f"Temporary directory: {temp_dir}")
 
     con = duckdb.connect()
     con.execute(f"SET memory_limit = '{mem_limit:.0f}GB'")
@@ -195,7 +195,7 @@ def sort_quant_parquet(input_path: str, output_path: str, test_mode: bool = Fals
     con.execute("SET preserve_insertion_order = false")
 
     try:
-        # 使用 TRY_CAST 处理空值或无效值
+        # Use TRY_CAST to handle null or invalid values.
         if test_mode:
             query = f"""
                 COPY (
@@ -224,16 +224,16 @@ def sort_quant_parquet(input_path: str, output_path: str, test_mode: bool = Fals
                 (FORMAT PARQUET, COMPRESSION 'zstd', ROW_GROUP_SIZE 100000)
             """
 
-        log("开始排序...")
+        log("Starting sort...")
         con.execute(query)
 
         elapsed = time.time() - start_time
 
         result = con.execute(f"SELECT COUNT(*) FROM read_parquet('{output_path}')").fetchone()
-        log(f"完成! 输出行数: {result[0]:,}")
-        log(f"耗时: {elapsed:.1f} 秒")
+        log(f"Done! Output rows: {result[0]:,}")
+        log(f"Elapsed: {elapsed:.1f} s")
 
-        log("排序后前5行:")
+        log("First 5 rows after sorting:")
         samples = con.execute(f"""
             SELECT event_id, market_id, timestamp, event_title
             FROM read_parquet('{output_path}')
@@ -247,23 +247,23 @@ def sort_quant_parquet(input_path: str, output_path: str, test_mode: bool = Fals
         del con
         gc.collect()
         cleanup_temp(temp_dir)
-        log("内存已释放")
+        log("Memory released")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Parquet 文件排序脚本')
+    parser = argparse.ArgumentParser(description='Parquet sorting script')
     parser.add_argument('target', choices=['users', 'quant'],
-                        help='要排序的文件类型: users 或 quant')
+                        help='File type to sort: users or quant')
     parser.add_argument('-i', '--input', default=None,
-                        help='输入文件路径 (完整路径)')
+                        help='Input file path (full path)')
     parser.add_argument('-o', '--output', default=None,
-                        help='输出文件路径 (完整路径)')
+                        help='Output file path (full path)')
     parser.add_argument('--test', action='store_true',
-                        help='测试模式，只处理前100万行')
+                        help='Test mode, process only the first 1 million rows')
 
     args = parser.parse_args()
 
-    # 默认路径
+    # Default paths.
     default_dir = Path('data/data_clean')
     suffix = "_test" if args.test else "_sorted"
 
@@ -272,7 +272,7 @@ def main():
         output_file = args.output or str(default_dir / f'users{suffix}.parquet')
 
         if not os.path.exists(input_file):
-            print(f"错误: 文件不存在 {input_file}")
+            print(f"Error: file does not exist {input_file}")
             sys.exit(1)
 
         sort_users_parquet(input_file, output_file, args.test)
@@ -282,13 +282,13 @@ def main():
         output_file = args.output or str(default_dir / f'quant{suffix}.parquet')
 
         if not os.path.exists(input_file):
-            print(f"错误: 文件不存在 {input_file}")
+            print(f"Error: file does not exist {input_file}")
             sys.exit(1)
 
         sort_quant_parquet(input_file, output_file, args.test)
 
     print("\n" + "="*60, flush=True)
-    print("全部完成!", flush=True)
+    print("All done!", flush=True)
     print("="*60, flush=True)
 
 

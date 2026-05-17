@@ -1,5 +1,5 @@
 """
-cli - 命令行工具
+cli - command-line tools
 """
 
 from .main import main

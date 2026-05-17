@@ -1,5 +1,5 @@
 """
-事件解码器 - 只解码 OrderFilled 事件
+Event decoder - decodes only OrderFilled events.
 """
 
 import logging
@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 class EventDecoder:
-    """OrderFilled 事件解码器"""
+    """OrderFilled event decoder."""
 
-    # OrderFilled 事件 ABI
+    # OrderFilled event ABI
     ORDER_FILLED_ABI = [
         ("orderHash", "bytes32", True),
         ("maker", "address", True),
@@ -33,11 +33,11 @@ class EventDecoder:
         self.w3 = Web3()
 
     def decode(self, record: Dict[str, Any]) -> Dict[str, Any]:
-        """解码 OrderFilled 事件"""
+        """Decode an OrderFilled event."""
         topics = record.get('topics', [])
         data = record.get('data', '')
 
-        # 设置事件名（因为我们只爬 OrderFilled）
+        # Set the event name because we only fetch OrderFilled.
         record['event_name'] = 'OrderFilled'
 
         indexed = [(n, t) for n, t, i in self.ORDER_FILLED_ABI if i]
@@ -45,12 +45,12 @@ class EventDecoder:
 
         params = {}
 
-        # 解码 indexed 参数 (从 topics)
+        # Decode indexed parameters from topics.
         for i, (name, ptype) in enumerate(indexed):
             if i + 1 < len(topics):
                 params[name] = self._decode_topic(ptype, topics[i + 1])
 
-        # 解码 non-indexed 参数 (从 data)
+        # Decode non-indexed parameters from data.
         if non_indexed and data:
             types = [t for _, t in non_indexed]
             values = self._decode_data(types, data)
@@ -61,14 +61,14 @@ class EventDecoder:
         return record
 
     def decode_batch(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """批量解码"""
+        """Decode a batch of records."""
         return [self.decode(r) for r in records]
 
     def format_event(self, record: Dict[str, Any]) -> Dict[str, Any]:
-        """格式化 OrderFilled 事件为输出格式"""
+        """Format an OrderFilled event into the output structure."""
         params = record.get('decoded_params', {})
 
-        # 基础字段
+        # Base fields.
         result = {
             'transaction_hash': record.get('transaction_hash', ''),
             'block_number': record.get('block_number', 0),
@@ -78,12 +78,12 @@ class EventDecoder:
             'event_name': 'OrderFilled',
         }
 
-        # 格式化时间
+        # Format timestamp.
         ts = result['timestamp']
         if isinstance(ts, (int, float)) and 0 < ts < 4102444800:
             result['datetime'] = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
 
-        # OrderFilled 参数 (asset_id 是超大整数，必须转成字符串)
+        # OrderFilled params: asset_id can be a huge integer, so convert it to string.
         result.update({
             'order_hash': params.get('orderHash', ''),
             'maker': params.get('maker', ''),
@@ -100,11 +100,11 @@ class EventDecoder:
         return result
 
     def format_batch(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """批量格式化"""
+        """Format a batch of records."""
         return [self.format_event(r) for r in records]
 
     def _decode_topic(self, ptype: str, value: str) -> Any:
-        """解码 topic"""
+        """Decode a topic value."""
         try:
             val = value.replace('0x', '').zfill(64)
             if ptype == 'address':
@@ -118,7 +118,7 @@ class EventDecoder:
             return value
 
     def _decode_data(self, types: List[str], data: Any) -> List[Any]:
-        """解码 data 字段"""
+        """Decode the data field."""
         try:
             if isinstance(data, bytes):
                 data = data.hex()
@@ -141,7 +141,7 @@ class EventDecoder:
                 elif ptype == 'address':
                     results.append(to_checksum_address('0x' + chunk[24:]))
                 elif ptype.endswith('[]'):
-                    # 简化处理数组
+                    # Simplified handling for arrays.
                     results.append([])
                 else:
                     results.append('0x' + chunk)
@@ -150,5 +150,5 @@ class EventDecoder:
 
             return results
         except Exception as e:
-            logger.warning(f"解码失败: {e}")
+            logger.warning(f"Decode failed: {e}")
             return [0 if t.startswith('uint') else None for t in types]

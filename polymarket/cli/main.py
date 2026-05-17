@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-poly_onchain 命令行工具
+poly_onchain command-line tool
 
-使用方法:
+Usage:
     python -m poly_onchain.cli fetch-onchain --blocks 1000
     python -m poly_onchain.cli fetch-markets
     python -m poly_onchain.cli process
@@ -41,19 +41,19 @@ logger = logging.getLogger(__name__)
 
 
 def setup_logging(verbose: bool = False):
-    """设置日志，输出到控制台和文件"""
+    """Set up logging to both the console and file"""
     log_level = logging.DEBUG if verbose else logging.INFO
     log_format = '%(asctime)s [%(levelname)s] %(message)s'
     date_format = '%Y-%m-%d %H:%M:%S'
 
-    # 创建根日志器
+    # Create the root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
 
-    # 清除已有处理器（避免重复）
+    # Clear existing handlers to avoid duplication
     root_logger.handlers.clear()
 
-    # 文件处理器（主要日志输出）
+    # File handler for primary log output
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = LOG_DIR / 'poly_onchain.log'
     file_handler = logging.FileHandler(log_file, encoding='utf-8')
@@ -61,8 +61,8 @@ def setup_logging(verbose: bool = False):
     file_handler.setFormatter(logging.Formatter(log_format, date_format))
     root_logger.addHandler(file_handler)
 
-    # 控制台处理器（仅当不是 nohup 运行时）
-    # 检查是否有交互式终端
+    # Console handler, only when not running under nohup
+    # Check whether an interactive terminal is available
     if sys.stdout.isatty():
         console_handler = logging.StreamHandler()
         console_handler.setLevel(log_level)
@@ -71,36 +71,36 @@ def setup_logging(verbose: bool = False):
 
 
 def get_last_block() -> int:
-    """获取上次处理的区块
+    """Get the last processed block
 
-    优先级：
-    1. STATE_FILE 中的 last_block（最准确，记录了实际处理到的区块）
-    2. orderfilled.parquet 中的最大 block_number（备用）
-    3. 返回 0（首次运行）
+    Priority:
+    1. `last_block` in `STATE_FILE` (most accurate, records the actual processed block)
+    2. Maximum `block_number` in `orderfilled.parquet` (fallback)
+    3. Return 0 (first run)
     """
-    # 优先从 state 文件读取
+    # First try reading from the state file
     if STATE_FILE.exists():
         try:
             with open(STATE_FILE) as f:
                 state = json.load(f)
 
-                # 新格式：fetch_onchain.last_block
+                # New format: fetch_onchain.last_block
                 if 'fetch_onchain' in state:
                     last_block = state['fetch_onchain'].get('last_block', 0)
                     if last_block > 0:
                         return last_block
 
-                # 旧格式兼容：直接的 last_block
+                # Backward compatibility: direct last_block
                 last_block = state.get('last_block', 0)
                 if last_block > 0:
                     return last_block
         except (json.JSONDecodeError, IOError):
             pass
 
-    # 备用：从 parquet 文件读取最大区块号
+    # Fallback: read the maximum block number from the parquet file
     if DECODED_EVENTS_FILE.exists():
         try:
-            # 读取整个文件的 block_number 列找最大值
+            # Read the block_number column from the whole file to find the maximum
             df = pq.read_table(DECODED_EVENTS_FILE, columns=['block_number']).to_pandas()
             if len(df) > 0:
                 return int(df['block_number'].max())
@@ -111,10 +111,10 @@ def get_last_block() -> int:
 
 
 def save_last_block(block: int):
-    """保存最后处理的区块到state.json"""
+    """Save the last processed block to state.json"""
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    # 读取现有状态
+    # Read existing state
     state = {}
     if STATE_FILE.exists():
         try:
@@ -123,55 +123,55 @@ def save_last_block(block: int):
         except:
             pass
 
-    # 更新fetch_onchain状态
+    # Update fetch_onchain state
     state['fetch_onchain'] = {
         'last_block': block,
         'updated_at': datetime.now().isoformat()
     }
 
-    # 保存
+    # Save
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f, indent=2)
 
 
 def cmd_fetch_onchain(args):
-    """获取链上数据（增量模式）
+    """Fetch on-chain data (incremental mode)
 
-    特性：
-    - 使用 PyArrow 流式写入，不读取历史数据
-    - 支持安全退出（Ctrl+C）
-    - 支持断点续传（--continue）
+    Features:
+    - Uses PyArrow streaming writes without reading historical data
+    - Supports safe exit with Ctrl+C
+    - Supports resume with --continue
     """
     import signal
 
-    # 输入验证
-    MAX_BLOCKS = 1_000_000  # 最大允许获取的区块数
-    MIN_BLOCK = 1  # 最小区块号
+    # Input validation
+    MAX_BLOCKS = 1_000_000  # maximum allowed block count
+    MIN_BLOCK = 1  # minimum block number
 
     if args.blocks is not None:
         if args.blocks <= 0:
-            logger.error(f"--blocks 必须为正整数，当前值: {args.blocks}")
+            logger.error(f"--blocks must be a positive integer, current value: {args.blocks}")
             return
         if args.blocks > MAX_BLOCKS:
-            logger.error(f"--blocks 超出限制，最大: {MAX_BLOCKS}，当前值: {args.blocks}")
+            logger.error(f"--blocks exceeds the limit, maximum: {MAX_BLOCKS}, current value: {args.blocks}")
             return
 
     if args.range is not None:
         start_r, end_r = args.range
         if start_r < MIN_BLOCK or end_r < MIN_BLOCK:
-            logger.error(f"区块号必须 >= {MIN_BLOCK}")
+            logger.error(f"Block number must be >= {MIN_BLOCK}")
             return
         if start_r > end_r:
-            logger.error(f"起始区块 ({start_r}) 不能大于结束区块 ({end_r})")
+            logger.error(f"Start block ({start_r}) cannot be greater than end block ({end_r})")
             return
         if end_r - start_r + 1 > MAX_BLOCKS:
-            logger.error(f"区块范围超出限制，最大: {MAX_BLOCKS}，当前范围: {end_r - start_r + 1}")
+            logger.error(f"Block range exceeds the limit, maximum: {MAX_BLOCKS}, current range: {end_r - start_r + 1}")
             return
 
     fetcher = LogFetcher(use_alchemy=args.alchemy)
     decoder = EventDecoder()
 
-    # 确定区块范围
+    # Determine the block range
     if args.continue_from:
         start = get_last_block() + 1
         end = fetcher.get_latest_block()
@@ -181,56 +181,56 @@ def cmd_fetch_onchain(args):
     elif args.range:
         start, end = args.range
     else:
-        logger.error("请指定: --blocks, --range, 或 --continue")
+        logger.error("Please specify --blocks, --range, or --continue")
         return
 
     if start > end:
-        logger.info("没有新区块")
+        logger.info("No new blocks")
         return
 
-    logger.info(f"获取区块 {start} - {end} (共 {end - start + 1} 个区块)")
+    logger.info(f"Fetching blocks {start} - {end} (total {end - start + 1} blocks)")
 
-    # 创建目录
+    # Create directories
     DATASET_DIR.mkdir(parents=True, exist_ok=True)
     LATEST_RESULT_DIR.mkdir(parents=True, exist_ok=True)
     DATA_CLEAN_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 加载 token 映射（用于生成 trades）
+    # Load token mappings used for generating trades
     token_mapping = load_token_mapping(MARKETS_FILE)
     if MISSING_MARKETS_FILE.exists():
         token_mapping.update(load_token_mapping(MISSING_MARKETS_FILE))
-    logger.info(f"加载 {len(token_mapping)} 个 token 映射")
+    logger.info(f"Loaded {len(token_mapping)} token mappings")
 
-    # 安全退出标志
+    # Safe-exit flag
     stop_requested = False
     last_saved_block = start - 1
 
     def signal_handler(signum, frame):
         nonlocal stop_requested
-        logger.warning(f"收到退出信号 ({signum})，将在当前批次完成后安全退出...")
+        logger.warning(f"Received exit signal ({signum}), will exit safely after the current batch finishes...")
         stop_requested = True
 
-    # 注册信号处理器
+    # Register signal handlers
     original_sigint = signal.signal(signal.SIGINT, signal_handler)
     original_sigterm = signal.signal(signal.SIGTERM, signal_handler)
 
-    # PyArrow 流式 writers（追加模式）
+    # PyArrow streaming writers (append mode)
     events_writer = None
     trades_writer = None
     quant_writer = None
     users_writer = None
 
-    # 使用带时间戳的 session 文件名，避免覆盖已有数据
+    # Use timestamped session filenames to avoid overwriting existing data
     session_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     events_temp = DATASET_DIR / f'orderfilled_session_{session_ts}.parquet'
     trades_temp = DATASET_DIR / f'trades_session_{session_ts}.parquet'
     quant_temp = DATA_CLEAN_DIR / f'quant_session_{session_ts}.parquet'
     users_temp = DATA_CLEAN_DIR / f'users_session_{session_ts}.parquet'
 
-    logger.info(f"本次会话文件: session_{session_ts}")
+    logger.info(f"Session file prefix: session_{session_ts}")
 
     def close_writers():
-        """关闭所有 writers，确保数据写入磁盘"""
+        """Close all writers and ensure data is flushed to disk"""
         nonlocal events_writer, trades_writer, quant_writer, users_writer
         for w in [events_writer, trades_writer, quant_writer, users_writer]:
             if w:
@@ -242,7 +242,7 @@ def cmd_fetch_onchain(args):
 
 
     def merge_temp_files():
-        """合并当前 session 文件到主文件（仅当前 session）"""
+        """Merge the current session files into the main files (current session only)"""
         import shutil
         for temp_file, main_file in [
             (events_temp, DECODED_EVENTS_FILE),
@@ -253,7 +253,7 @@ def cmd_fetch_onchain(args):
             if not temp_file.exists():
                 continue
             if main_file.exists():
-                # 合并
+                # Merge
                 temp_table = pq.read_table(temp_file)
                 main_table = pq.read_table(main_file)
                 combined = pa.concat_tables([main_table, temp_table])
@@ -261,12 +261,12 @@ def cmd_fetch_onchain(args):
                 temp_file.unlink()
                 del temp_table, main_table, combined
             else:
-                # 直接移动
+                # Move directly
                 shutil.move(str(temp_file), str(main_file))
 
-    # 分批获取，每 100 区块保存一次
+    # Fetch in batches and save every 100 blocks
     batch_size = 100
-    checkpoint_interval = 10  # 每10批保存一次断点（约1000区块，33分钟数据）
+    checkpoint_interval = 10  # Save a checkpoint every 10 batches (about 1000 blocks, 33 minutes of data)
     current = start
     total_events = 0
     total_trades = 0
@@ -274,54 +274,54 @@ def cmd_fetch_onchain(args):
     total_users = 0
     batches_since_checkpoint = 0
 
-    # 记录失败的区块范围
+    # Record failed block ranges
     failed_blocks_file = DATA_DIR / f'failed_blocks_{session_ts}.txt'
     failed_count = 0
 
     def record_failed_block(block_start, block_end, reason=""):
-        """记录失败的区块范围"""
+        """Record a failed block range"""
         nonlocal failed_count
         with open(failed_blocks_file, 'a') as f:
             f.write(f"{block_start}-{block_end}\n")
         failed_count += 1
-        logger.warning(f"记录失败区块: {block_start}-{block_end} {reason}")
+        logger.warning(f"Recorded failed block range: {block_start}-{block_end} {reason}")
 
     try:
         while current <= end:
-            # 检查退出信号
+            # Check for exit signal
             if stop_requested:
-                logger.info("收到退出信号，保存进度并退出...")
+                logger.info("Received exit signal, saving progress and exiting...")
                 break
 
             batch_end = min(current + batch_size - 1, end)
 
             logs = fetcher.fetch_range_in_batches(current, batch_end)
             if logs is None:
-                # RPC 请求失败，记录并继续下一批
-                record_failed_block(current, batch_end, "(RPC失败)")
-                # 注意：这里不更新 last_saved_block，因为这批数据没有成功获取
+                # RPC request failed, record it and continue with the next batch
+                record_failed_block(current, batch_end, "(RPC failed)")
+                # Do not update last_saved_block here because this batch was not fetched successfully
                 current = batch_end + 1
                 batches_since_checkpoint += 1
                 continue
 
-            # logs 是列表（可能为空，表示该区块范围没有交易事件）
+            # logs is a list and may be empty, meaning no trade events in this block range
             if logs:
                 decoded = decoder.decode_batch(logs)
                 formatted = decoder.format_batch(decoded)
 
                 if formatted:
-                    # 新数据（只包含当前批次）
+                    # New data containing only the current batch
                     new_df = pd.DataFrame(formatted)
                     batch_events = len(new_df)
 
-                    # 1. 写入 orderfilled（流式追加到临时文件）
+                    # 1. Write orderfilled by streaming append into the temp file
                     events_table = pa.Table.from_pandas(new_df, preserve_index=False)
                     if events_writer is None:
                         events_writer = pq.ParquetWriter(str(events_temp), events_table.schema, compression='snappy')
                     events_writer.write_table(events_table)
                     new_df.tail(1000).to_csv(ORDERFILLED_PREVIEW_FILE, index=False)
 
-                    # 2. 生成 trades
+                    # 2. Generate trades
                     events = new_df.to_dict('records')
                     trades_df = extract_trades(events, token_mapping)
                     batch_trades = 0
@@ -331,14 +331,14 @@ def cmd_fetch_onchain(args):
                     if not trades_df.empty:
                         batch_trades = len(trades_df)
 
-                        # 写入 trades
+                        # Write trades
                         trades_table = pa.Table.from_pandas(trades_df, preserve_index=False)
                         if trades_writer is None:
                             trades_writer = pq.ParquetWriter(str(trades_temp), trades_table.schema, compression='snappy')
                         trades_writer.write_table(trades_table)
                         trades_df.tail(1000).to_csv(TRADES_PREVIEW_FILE, index=False)
 
-                        # 3. 生成 quant
+                        # 3. Generate quant
                         quant_df = clean_trades_df(trades_df)
                         if not quant_df.empty:
                             batch_quant = len(quant_df)
@@ -348,7 +348,7 @@ def cmd_fetch_onchain(args):
                             quant_writer.write_table(quant_table)
                             quant_df.tail(1000).to_csv(QUANT_PREVIEW_FILE, index=False)
 
-                        # 4. 生成 users
+                        # 4. Generate users
                         users_df = clean_users_df(trades_df)
                         if not users_df.empty:
                             batch_users = len(users_df)
@@ -363,96 +363,96 @@ def cmd_fetch_onchain(args):
                     total_quant += batch_quant
                     total_users += batch_users
 
-                    logger.info(f"区块 {current}-{batch_end}: "
-                               f"事件+{batch_events}, 交易+{batch_trades}, "
+                    logger.info(f"Blocks {current}-{batch_end}: "
+                               f"events+{batch_events}, trades+{batch_trades}, "
                                f"quant+{batch_quant}, users+{batch_users}")
 
             last_saved_block = batch_end
             current = batch_end + 1
             batches_since_checkpoint += 1
 
-            # 定期保存断点（防止崩溃丢失进度）
+            # Save checkpoints periodically to avoid losing progress on crashes
             if batches_since_checkpoint >= checkpoint_interval:
                 save_last_block(last_saved_block)
-                logger.info(f"  ✓ 断点已保存 (区块 {last_saved_block})")
+                logger.info(f"  ✓ Checkpoint saved (block {last_saved_block})")
                 batches_since_checkpoint = 0
 
-        # 关闭 writers
+        # Close writers
         close_writers()
 
-        # 根据参数决定是否合并
+        # Decide whether to merge based on arguments
         if total_events > 0 and getattr(args, 'merge', False):
-            logger.info("合并数据到主文件...")
+            logger.info("Merging data into main files...")
             merge_temp_files()
         elif total_events > 0:
-            logger.info(f"数据已保存到临时文件，使用 --merge 参数合并到主文件")
+            logger.info(f"Data saved to temporary files. Use --merge to merge into the main files")
 
-        # 保存最后处理的区块
+        # Save the last processed block
         save_last_block(last_saved_block)
 
-        logger.info(f"链上数据获取完成, 新增: 事件 {total_events}, 交易 {total_trades}, "
+        logger.info(f"On-chain data fetch complete, added: events {total_events}, trades {total_trades}, "
                    f"quant {total_quant}, users {total_users}")
 
-        # 报告失败统计
+        # Report failure statistics
         if failed_count > 0:
-            logger.warning(f"⚠️ 有 {failed_count} 个区块批次获取失败，已记录到: {failed_blocks_file}")
-            logger.info(f"可以之后用 --range 参数补爬这些区块")
+            logger.warning(f"Warning: {failed_count} block batches failed to fetch and were recorded in: {failed_blocks_file}")
+            logger.info(f"You can refetch these blocks later with --range")
 
     except Exception as e:
-        logger.error(f"获取链上数据出错: {e}")
+        logger.error(f"Error fetching on-chain data: {e}")
         close_writers()
-        # 即使出错也保存进度
+        # Save progress even if an error occurs
         if last_saved_block >= start:
             save_last_block(last_saved_block)
         raise
 
     finally:
-        # 恢复原始信号处理器
+        # Restore original signal handlers
         signal.signal(signal.SIGINT, original_sigint)
         signal.signal(signal.SIGTERM, original_sigterm)
         close_writers()
 
 
 def cmd_fetch_markets(args):
-    """增量获取新市场（高频运行，如每小时）
+    """Incrementally fetch new markets (high-frequency, e.g. hourly)
 
-    特性：
-    - 增量获取新市场，不重复获取已有市场
-    - 支持安全退出（Ctrl+C）
-    - 支持断点续传（--continue）
-    - 市场数据较小，直接内存操作后一次性保存
+    Features:
+    - Incrementally fetch new markets without refetching existing ones
+    - Supports safe exit with Ctrl+C
+    - Supports resume with --continue
+    - Market data is small, so it is processed in memory and saved in one shot
     """
     import signal
 
     client = GammaApiClient()
 
     if not client.test_connection():
-        logger.error("API 连接失败")
+        logger.error("API connection failed")
         return
 
-    # 创建目录
+    # Create directories
     DATASET_DIR.mkdir(parents=True, exist_ok=True)
     LATEST_RESULT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 加载已有市场ID集合（只加载ID，不加载全部数据）
+    # Load the existing market ID set (IDs only, not full data)
     existing_ids = set()
     if MARKETS_FILE.exists():
         existing_df = pq.read_table(MARKETS_FILE, columns=['id']).to_pandas()
         existing_ids = set(existing_df['id'].astype(str).tolist())
-        logger.info(f"已有 {len(existing_ids)} 个市场")
+        logger.info(f"Already have {len(existing_ids)} markets")
 
-    # 安全退出标志
+    # Safe-exit flag
     stop_requested = False
 
     def signal_handler(signum, frame):
         nonlocal stop_requested
-        logger.warning(f"收到退出信号 ({signum})，将在当前批次完成后安全退出...")
+        logger.warning(f"Received exit signal ({signum}), will exit safely after the current batch finishes...")
         stop_requested = True
 
     original_sigint = signal.signal(signal.SIGINT, signal_handler)
     original_sigterm = signal.signal(signal.SIGTERM, signal_handler)
 
-    # 读取断点
+    # Read checkpoint
     continue_from = getattr(args, 'continue_from', False)
     offset = 0
     if continue_from and STATE_FILE.exists():
@@ -462,13 +462,13 @@ def cmd_fetch_markets(args):
                 markets_state = state.get('fetch_markets', {})
                 offset = markets_state.get('last_offset', 0)
                 if offset > 0:
-                    logger.info(f"从 offset={offset} 继续获取")
+                    logger.info(f"Continuing from offset={offset}")
         except Exception as e:
-            logger.warning(f"读取断点失败: {e}")
+            logger.warning(f"Failed to read checkpoint: {e}")
             offset = 0
 
-    logger.info("增量获取新市场...")
-    new_markets = []  # 只存储新市场
+    logger.info("Incrementally fetching new markets...")
+    new_markets = []  # Store only new markets.
     new_count = 0
     consecutive_existing = 0
     batch_size = 500
@@ -476,10 +476,10 @@ def cmd_fetch_markets(args):
     try:
         while True:
             if stop_requested:
-                logger.info("收到退出信号，保存进度并退出...")
+                logger.info("Received exit signal, saving progress and exiting...")
                 break
 
-            logger.info(f"获取 offset={offset}...")
+            logger.info(f"Fetching offset={offset}...")
             markets = client.get_markets(limit=batch_size, offset=offset)
 
             if not markets:
@@ -490,7 +490,7 @@ def cmd_fetch_markets(args):
             for market in markets:
                 market_id = str(market['id'])
                 if market_id not in existing_ids:
-                    # 新市场
+                    # New market.
                     new_markets.append(market)
                     existing_ids.add(market_id)
                     batch_new += 1
@@ -500,11 +500,11 @@ def cmd_fetch_markets(args):
                     consecutive_existing += 1
 
             if batch_new > 0:
-                logger.info(f"  本批新增 {batch_new} 个市场")
+                logger.info(f"  New markets in this batch: {batch_new} markets")
 
-            # 如果连续3批都是已存在的市场，停止
+            # Stop if three consecutive batches contain only existing markets
             if consecutive_existing >= batch_size * 3:
-                logger.info("连续遇到已存在市场，增量同步完成")
+                logger.info("Only existing markets encountered consecutively, incremental sync complete")
                 break
 
             if len(markets) < batch_size:
@@ -513,13 +513,13 @@ def cmd_fetch_markets(args):
             offset += len(markets)
             time.sleep(0.3)
 
-        # 保存新市场（追加到主文件）
+        # Save new markets by appending to the main file.
         if new_markets:
-            logger.info(f"保存 {len(new_markets)} 个新市场...")
+            logger.info(f"Saving {len(new_markets)} new markets...")
             new_df = pd.DataFrame(new_markets)
 
             if MARKETS_FILE.exists():
-                # 追加到已有文件
+                # Append to the existing file
                 existing_table = pq.read_table(MARKETS_FILE)
                 new_table = pa.Table.from_pandas(new_df, preserve_index=False)
                 combined = pa.concat_tables([existing_table, new_table])
@@ -528,11 +528,11 @@ def cmd_fetch_markets(args):
             else:
                 new_df.to_parquet(MARKETS_FILE, index=False)
 
-            # 更新预览（从文件读取最新1000条）
+            # Update preview by reading the latest 1000 rows from the file
             preview_df = pq.read_table(MARKETS_FILE).to_pandas().tail(1000)
             preview_df.to_csv(MARKETS_PREVIEW_FILE, index=False)
 
-        # 保存断点
+        # Save checkpoint.
         state = {}
         if STATE_FILE.exists():
             try:
@@ -550,7 +550,7 @@ def cmd_fetch_markets(args):
         with open(STATE_FILE, 'w') as f:
             json.dump(state, f, indent=2)
 
-        logger.info(f"完成! 共 {len(existing_ids)} 个市场 (新增 {new_count})")
+        logger.info(f"Done! Total markets: {len(existing_ids)} markets (new: {new_count})")
 
     finally:
         signal.signal(signal.SIGINT, original_sigint)
@@ -558,57 +558,57 @@ def cmd_fetch_markets(args):
 
 
 def cmd_update_markets(args):
-    """更新未closed市场的状态（低频运行，如每周）
+    """Update the status of markets that are not closed (low-frequency, e.g. weekly)
 
-    特性：
-    - 只更新未closed的市场
-    - 支持安全退出（Ctrl+C）
-    - 支持断点续传（--continue）
-    - 市场数据较小，需要加载全部用于更新
+    Features:
+    - Update only markets that are not closed
+    - Supports safe exit with Ctrl+C
+    - Supports resume with --continue
+    - Market data is small enough that the full file is loaded for updates
 
-    注意：市场文件较小（~60MB），需要完整加载才能更新特定市场
+    Note: the market file is small (~60MB), so full loading is required to update specific markets
     """
     import signal
 
     client = GammaApiClient()
 
     if not client.test_connection():
-        logger.error("API 连接失败")
+        logger.error("API connection failed")
         return
 
     if not MARKETS_FILE.exists():
-        logger.error(f"市场文件不存在: {MARKETS_FILE}")
+        logger.error(f"Markets file does not exist: {MARKETS_FILE}")
         return
 
-    # 加载已有数据（市场文件较小，~60MB，可以完整加载）
+    # Load existing data (the market file is small enough to load fully)
     df = pd.read_parquet(MARKETS_FILE)
     markets_dict = {str(row['id']): dict(row) for _, row in df.iterrows()}
 
-    # 筛选未closed的市场
+    # Filter markets that are not closed
     unclosed_ids = []
     for mid, m in markets_dict.items():
         is_closed = m.get('closed', m.get('resolved', False))
         if not is_closed:
             unclosed_ids.append(mid)
 
-    logger.info(f"共 {len(markets_dict)} 个市场，其中 {len(unclosed_ids)} 个未closed")
+    logger.info(f"Total markets: {len(markets_dict)}, not closed: {len(unclosed_ids)}")
 
     if not unclosed_ids:
-        logger.info("没有需要更新的市场")
+        logger.info("No markets need updating")
         return
 
-    # 安全退出标志
+    # Safe-exit flag
     stop_requested = False
 
     def signal_handler(signum, frame):
         nonlocal stop_requested
-        logger.warning(f"收到退出信号 ({signum})，将在当前市场完成后安全退出...")
+        logger.warning(f"Received exit signal ({signum}), will exit safely after the current market finishes...")
         stop_requested = True
 
     original_sigint = signal.signal(signal.SIGINT, signal_handler)
     original_sigterm = signal.signal(signal.SIGTERM, signal_handler)
 
-    # 读取断点
+    # Read checkpoint
     continue_from = getattr(args, 'continue_from', False)
     start_idx = 0
     if continue_from and STATE_FILE.exists():
@@ -618,9 +618,9 @@ def cmd_update_markets(args):
                 update_state = state.get('update_markets', {})
                 start_idx = update_state.get('last_index', 0)
                 if start_idx > 0:
-                    logger.info(f"从第 {start_idx} 个市场继续更新")
+                    logger.info(f"Continuing from market #{start_idx}")
         except Exception as e:
-            logger.warning(f"读取断点失败: {e}")
+            logger.warning(f"Failed to read checkpoint: {e}")
             start_idx = 0
 
     updated_count = 0
@@ -628,7 +628,7 @@ def cmd_update_markets(args):
     last_saved_idx = start_idx - 1
 
     def save_progress(idx):
-        """保存进度和数据"""
+        """Save progress and data"""
         df_updated = pd.DataFrame(list(markets_dict.values()))
         pq.write_table(
             pa.Table.from_pandas(df_updated, preserve_index=False),
@@ -657,16 +657,16 @@ def cmd_update_markets(args):
     try:
         for idx, market_id in enumerate(unclosed_ids[start_idx:], start=start_idx):
             if stop_requested:
-                logger.info("收到退出信号，保存进度并退出...")
+                logger.info("Received exit signal, saving progress and exiting...")
                 break
 
-            logger.info(f"更新市场 {idx+1}/{len(unclosed_ids)}: {market_id[:20]}...")
+            logger.info(f"Updating market {idx+1}/{len(unclosed_ids)}: {market_id[:20]}...")
 
             old_market = markets_dict[market_id]
             token_id = old_market.get('token1', '')
 
             if not token_id:
-                logger.warning(f"市场 {market_id} 没有 token_id，跳过")
+                logger.warning(f"Market {market_id} has no token_id, skipping")
                 last_saved_idx = idx
                 continue
 
@@ -678,22 +678,22 @@ def cmd_update_markets(args):
 
                 if new_market.get('closed', False):
                     closed_count += 1
-                    logger.info(f"  ✓ 市场已closed")
+                    logger.info(f"  ✓ Market is now closed")
 
             last_saved_idx = idx
 
-            # 每50个保存一次
+            # Save every 50 markets
             if (idx + 1) % 50 == 0:
                 save_progress(idx)
-                logger.info(f"进度: {idx+1}/{len(unclosed_ids)} (已更新 {updated_count}, 新closed {closed_count})")
+                logger.info(f"Progress: {idx+1}/{len(unclosed_ids)} (updated {updated_count}, newly closed {closed_count})")
 
             time.sleep(0.3)
 
-        # 最终保存
+        # Final save
         if last_saved_idx >= start_idx:
             save_progress(last_saved_idx)
 
-        logger.info(f"完成! 更新 {updated_count} 个市场，其中 {closed_count} 个已closed")
+        logger.info(f"Done! Updated {updated_count} markets, {closed_count} are now closed")
 
     finally:
         signal.signal(signal.SIGINT, original_sigint)
@@ -701,36 +701,36 @@ def cmd_update_markets(args):
 
 
 def cmd_process_historical(args):
-    """分批处理历史数据（用于大文件，避免内存溢出）
+    """Process historical data in batches (for large files, to avoid out-of-memory issues)
 
-    使用方式：
+    Usage:
         python3 run.py process-historical --batch-size 1000000
-        python3 run.py process-historical --continue  # 从断点继续
+        python3 run.py process-historical --continue  # Continue from the last checkpoint
 
-    说明：
-        - 分批读取 orderfilled.parquet
-        - 使用 PyArrow 流式写入（不读取已有数据）
-        - 支持断点续传，中断后可继续
-        - 安全退出：Ctrl+C 完成当前批次后关闭writer保存
+    Notes:
+        - Read orderfilled.parquet in batches
+        - Use PyArrow streaming writes without reading existing data
+        - Support resume after interruption
+        - Safe exit: Ctrl+C closes writers and saves after the current batch finishes
     """
     import signal
     import gc
 
     if not DECODED_EVENTS_FILE.exists():
-        logger.error(f"事件文件不存在: {DECODED_EVENTS_FILE}")
+        logger.error(f"Events file does not exist: {DECODED_EVENTS_FILE}")
         return
 
-    batch_size = getattr(args, 'batch_size', 1000000)  # 默认每批100万条
-    test_batches = getattr(args, 'test_batches', None)  # 测试模式
-    continue_from = getattr(args, 'continue_from', False)  # 断点续传
-    checkpoint_interval = 10  # 每10批保存进度
+    batch_size = getattr(args, 'batch_size', 1000000)  # default 1,000,000 rows per batch
+    test_batches = getattr(args, 'test_batches', None)  # test mode
+    continue_from = getattr(args, 'continue_from', False)  # resume mode
+    checkpoint_interval = 10  # save progress every 10 batches
 
-    # 读取上次进度（从state.json）
+    # Read previous progress from state.json
     start_batch = 0
     total_trades = 0
     total_quant = 0
     total_users = 0
-    session_id = 0  # 用于区分不同运行session的文件
+    session_id = 0  # used to distinguish files from different run sessions
 
     if continue_from and STATE_FILE.exists():
         try:
@@ -743,62 +743,62 @@ def cmd_process_historical(args):
                 total_users = process_state.get('total_users', 0)
                 session_id = process_state.get('session_id', 0) + 1
                 if start_batch > 0:
-                    logger.info(f"从批次 {start_batch + 1} 继续处理 (session {session_id})")
-                    logger.info(f"  已有数据: trades={total_trades:,}, quant={total_quant:,}, users={total_users:,}")
+                    logger.info(f"Continuing from batch {start_batch + 1} (session {session_id})")
+                    logger.info(f"  Existing data: trades={total_trades:,}, quant={total_quant:,}, users={total_users:,}")
         except Exception as e:
-            logger.warning(f"读取进度失败: {e}，从头开始")
+            logger.warning(f"Failed to read progress: {e}, starting from scratch")
             start_batch = 0
 
     if test_batches:
-        logger.info(f"测试模式：处理批次 {start_batch + 1} 到 {start_batch + test_batches}，每批 {batch_size:,} 条")
+        logger.info(f"Test mode: processing batches {start_batch + 1} to {start_batch + test_batches}, with {batch_size:,} rows")
     else:
         if start_batch > 0:
-            logger.info(f"继续分批处理历史数据，从批次 {start_batch + 1} 开始，每批 {batch_size:,} 条")
+            logger.info(f"Continuing historical batch processing from batch {start_batch + 1}, with {batch_size:,} rows")
         else:
-            logger.info(f"开始分批处理历史数据，每批 {batch_size:,} 条")
+            logger.info(f"Starting historical batch processing, with {batch_size:,} rows")
 
-    # 1. 加载 token 映射
-    logger.info("加载 token 映射...")
+    # 1. Load token mappings
+    logger.info("Loading token mappings...")
     token_mapping = load_token_mapping(MARKETS_FILE)
     if MISSING_MARKETS_FILE.exists():
         token_mapping.update(load_token_mapping(MISSING_MARKETS_FILE))
-    logger.info(f"共 {len(token_mapping)} 个 token 映射")
+    logger.info(f"Total token mappings: {len(token_mapping)}")
 
-    # 2. 获取总行数
+    # 2. Get total row count
     parquet_file = pq.ParquetFile(DECODED_EVENTS_FILE)
     total_rows = parquet_file.metadata.num_rows
     total_batches = (total_rows + batch_size - 1) // batch_size
-    logger.info(f"总计 {total_rows:,} 条事件，共 {total_batches} 批")
+    logger.info(f"Total events: {total_rows:,} rows across {total_batches} batches")
 
     if start_batch >= total_batches:
-        logger.info("所有数据已处理完成")
+        logger.info("All data has already been processed")
         return
 
-    # 确保目录存在
+    # Ensure directories exist
     DATASET_DIR.mkdir(parents=True, exist_ok=True)
     DATA_CLEAN_DIR.mkdir(parents=True, exist_ok=True)
     LATEST_RESULT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 安全退出标志
+    # Safe-exit flag
     stop_requested = False
 
     def signal_handler(signum, frame):
         nonlocal stop_requested
-        logger.warning(f"收到退出信号 ({signum})，将在当前批次完成后安全退出...")
+        logger.warning(f"Received exit signal ({signum}), will exit safely after the current batch finishes...")
         stop_requested = True
 
-    # 注册信号处理器
+    # Register signal handlers
     original_sigint = signal.signal(signal.SIGINT, signal_handler)
     original_sigterm = signal.signal(signal.SIGTERM, signal_handler)
 
-    # 确定输出文件路径
-    # 如果是续传，写入新的session文件；否则直接写主文件
+    # Determine output file paths
+    # If resuming, write to new session files; otherwise write directly to main files
     if start_batch > 0:
         trades_output = DATASET_DIR / f'trades_session_{session_id}.parquet'
         quant_output = DATA_CLEAN_DIR / f'quant_session_{session_id}.parquet'
         users_output = DATA_CLEAN_DIR / f'users_session_{session_id}.parquet'
     else:
-        # 从头开始，删除旧文件
+        # Starting from scratch: delete old files
         trades_output = TRADES_OUTPUT_FILE
         quant_output = QUANT_CLEAN_FILE
         users_output = USERS_CLEAN_FILE
@@ -806,13 +806,13 @@ def cmd_process_historical(args):
             if f.exists():
                 f.unlink()
 
-    # PyArrow 流式 writers
+    # PyArrow streaming writers
     trades_writer = None
     quant_writer = None
     users_writer = None
 
     def save_progress(batch_idx, final=False):
-        """保存进度到 state.json"""
+        """Save progress to state.json"""
         state = {}
         if STATE_FILE.exists():
             try:
@@ -835,7 +835,7 @@ def cmd_process_historical(args):
             json.dump(state, f, indent=2)
 
     def close_writers():
-        """关闭所有writers"""
+        """Close all writers"""
         nonlocal trades_writer, quant_writer, users_writer
         if trades_writer:
             trades_writer.close()
@@ -848,7 +848,7 @@ def cmd_process_historical(args):
             users_writer = None
 
     def merge_session_files():
-        """合并所有session文件到主文件"""
+        """Merge all session files into the main files"""
         import glob as glob_module
 
         for main_file, pattern, output_dir in [
@@ -860,26 +860,26 @@ def cmd_process_historical(args):
             if not session_files:
                 continue
 
-            # 收集所有文件（主文件 + session文件）
+            # Collect all files (main file + session files)
             all_files = []
             if main_file.exists():
                 all_files.append(str(main_file))
             all_files.extend(session_files)
 
             if len(all_files) <= 1:
-                # 只有一个文件，如果是session文件就重命名为主文件
+                # If there is only one file and it is a session file, rename it to the main file
                 if session_files and not main_file.exists():
                     import shutil
                     shutil.move(session_files[0], str(main_file))
                 continue
 
-            # 合并所有文件
-            logger.info(f"合并 {len(all_files)} 个文件到 {main_file.name}...")
+            # Merge all files.
+            logger.info(f"Merging {len(all_files)} files into {main_file.name}...")
             tables = [pq.read_table(f) for f in all_files]
             combined = pa.concat_tables(tables)
             pq.write_table(combined, main_file, compression='snappy')
 
-            # 删除session文件
+            # Delete session files
             for sf in session_files:
                 Path(sf).unlink()
 
@@ -890,29 +890,29 @@ def cmd_process_historical(args):
         last_completed_batch = start_batch - 1
 
         for batch_idx, batch in enumerate(parquet_file.iter_batches(batch_size=batch_size)):
-            # 检查退出信号
+            # Check for exit signal
             if stop_requested:
-                logger.info("收到退出信号，关闭writers并保存进度...")
+                logger.info("Received exit signal, closing writers and saving progress...")
                 close_writers()
                 save_progress(last_completed_batch)
                 break
 
-            # 跳过已处理的批次
+            # Skip batches that have already been processed
             if batch_idx < start_batch:
                 continue
 
-            # 测试模式：只处理指定数量的批次
+            # Test mode: process only the specified number of batches.
             if test_batches and (batch_idx - start_batch) >= test_batches:
-                logger.info(f"测试模式完成，已处理 {test_batches} 批")
+                logger.info(f"Test mode complete, processed {test_batches} batches")
                 break
 
             batch_start_time = datetime.now()
             batch_df = batch.to_pandas()
             batch_rows = len(batch_df)
             progress_pct = (batch_idx + 1) * 100.0 / total_batches
-            logger.info(f"处理批次 {batch_idx + 1}/{total_batches}: {batch_rows:,} 条事件 ({progress_pct:.1f}%)")
+            logger.info(f"Processing batch {batch_idx + 1}/{total_batches}: {batch_rows:,} event rows ({progress_pct:.1f}%)")
 
-            # 生成 trades
+            # Generate trades
             events = batch_df.to_dict('records')
             trades_df = extract_trades(events, token_mapping)
 
@@ -923,13 +923,13 @@ def cmd_process_historical(args):
                 batch_trades = len(trades_df)
                 total_trades += batch_trades
 
-                # 写入 trades
+                # Write trades
                 trades_table = pa.Table.from_pandas(trades_df, preserve_index=False)
                 if trades_writer is None:
                     trades_writer = pq.ParquetWriter(str(trades_output), trades_table.schema, compression='snappy')
                 trades_writer.write_table(trades_table)
 
-                # 生成并写入 quant
+                # Generate and write quant
                 quant_df = clean_trades_df(trades_df)
                 if not quant_df.empty:
                     batch_quant = len(quant_df)
@@ -939,7 +939,7 @@ def cmd_process_historical(args):
                         quant_writer = pq.ParquetWriter(str(quant_output), quant_table.schema, compression='snappy')
                     quant_writer.write_table(quant_table)
 
-                # 生成并写入 users
+                # Generate and write users
                 users_df = clean_users_df(trades_df)
                 if not users_df.empty:
                     batch_users = len(users_df)
@@ -950,25 +950,25 @@ def cmd_process_historical(args):
                     users_writer.write_table(users_table)
 
                 batch_elapsed = (datetime.now() - batch_start_time).total_seconds()
-                logger.info(f"  → 交易+{batch_trades:,}, quant+{batch_quant:,}, users+{batch_users:,} ({batch_elapsed:.1f}s)")
+                logger.info(f"  → trades+{batch_trades:,}, quant+{batch_quant:,}, users+{batch_users:,} ({batch_elapsed:.1f}s)")
 
-                # 实时更新 CSV 预览（保存最新1000条）
+                # Update CSV previews in real time with the latest 1000 rows
                 trades_df.tail(1000).to_csv(TRADES_PREVIEW_FILE, index=False)
                 if not quant_df.empty:
                     quant_df.tail(1000).to_csv(QUANT_PREVIEW_FILE, index=False)
                 if not users_df.empty:
                     users_df.tail(1000).to_csv(USERS_PREVIEW_FILE, index=False)
 
-            # 标记此批次完成
+            # Mark this batch as completed
             last_completed_batch = batch_idx
 
-            # 每 N 批保存进度（只保存state，不关闭writer）
+            # Save progress every N batches without closing writers.
             batches_processed = batch_idx - start_batch + 1
             if batches_processed > 0 and batches_processed % checkpoint_interval == 0:
                 save_progress(batch_idx)
-                logger.info(f"  ✓ 进度已保存 (批次 {batch_idx + 1})")
+                logger.info(f"  ✓ Progress saved (batch {batch_idx + 1})")
 
-            # 显式释放内存
+            # Explicitly free memory
             del batch_df, trades_df
             if 'quant_df' in locals():
                 del quant_df
@@ -976,77 +976,77 @@ def cmd_process_historical(args):
                 del users_df
             gc.collect()
 
-        # 正常完成
+        # Normal completion
         if not stop_requested:
             close_writers()
             save_progress(last_completed_batch)
 
-            # 合并所有session文件
+            # Merge all session files.
             if session_id > 0:
-                logger.info("合并所有session文件...")
+                logger.info("Merging all session files...")
                 merge_session_files()
 
-            logger.info(f"历史数据处理完成!")
-            logger.info(f"  总计: 交易 {total_trades:,}, quant {total_quant:,}, users {total_users:,}")
+            logger.info(f"Historical data processing complete!")
+            logger.info(f"  Total: trades {total_trades:,}, quant {total_quant:,}, users {total_users:,}")
 
     except Exception as e:
-        logger.error(f"处理出错: {e}")
+        logger.error(f"Processing error: {e}")
         close_writers()
         if last_completed_batch >= start_batch:
             save_progress(last_completed_batch)
-            logger.info(f"已保存进度到批次 {last_completed_batch + 1}")
+            logger.info(f"Saved progress through batch {last_completed_batch + 1}")
         raise
 
     finally:
-        # 恢复原始信号处理器
+        # Restore original signal handlers
         signal.signal(signal.SIGINT, original_sigint)
         signal.signal(signal.SIGTERM, original_sigterm)
 
-        # 确保 writers 关闭
+        # Ensure writers are closed
         close_writers()
 
 
 def cmd_process(args):
-    """处理交易数据（带 market_id 关联和缺失 token 补全）
+    """Process trade data with market_id mapping and missing token backfill
 
-    警告：此命令会一次性读取全部数据，仅适用于小数据集！
-    对于大数据集（>1GB），请使用 process-historical 命令。
+    Warning: this command reads all data at once and is only suitable for small datasets!
+    For large datasets (>1GB), use the process-historical command instead.
     """
     if not DECODED_EVENTS_FILE.exists():
-        logger.error(f"事件文件不存在: {DECODED_EVENTS_FILE}")
+        logger.error(f"Events file does not exist: {DECODED_EVENTS_FILE}")
         return
 
-    # 1. 加载 token 映射
-    logger.info("加载 token 映射...")
+    # 1. Load token mappings
+    logger.info("Loading token mappings...")
     token_mapping = load_token_mapping(MARKETS_FILE)
 
-    # 也加载缺失市场文件
+    # Also load the missing markets file
     if MISSING_MARKETS_FILE.exists():
         missing_mapping = load_token_mapping(MISSING_MARKETS_FILE)
         token_mapping.update(missing_mapping)
-        logger.info(f"合并缺失市场映射，共 {len(token_mapping)} 个 token")
+        logger.info(f"Merged missing market mappings, total tokens: {len(token_mapping)}")
 
-    # 2. 读取事件并提取交易
-    logger.info("读取事件...")
+    # 2. Read events and extract trades
+    logger.info("Reading events...")
     df = pd.read_parquet(DECODED_EVENTS_FILE)
     events = df.to_dict('records')
 
-    logger.info("提取交易...")
+    logger.info("Extracting trades...")
     trades_df = extract_trades(events, token_mapping)
 
     if trades_df.empty:
-        logger.info("没有交易数据")
+        logger.info("No trade data")
         return
 
-    # 3. 查找并补全缺失 token
+    # 3. Find and backfill missing tokens
     missing_tokens = find_missing_tokens(trades_df, token_mapping)
     if missing_tokens and not getattr(args, 'skip_missing', False):
-        logger.info(f"补全 {len(missing_tokens)} 个缺失 token...")
+        logger.info(f"Backfilling {len(missing_tokens)} missing tokens...")
         client = GammaApiClient()
         new_markets = client.fetch_missing_tokens(list(missing_tokens))
 
         if new_markets:
-            # 保存到缺失市场文件
+            # Save to the missing markets file.
             new_df = pd.DataFrame(new_markets)
             MISSING_MARKETS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1056,37 +1056,37 @@ def cmd_process(args):
                 new_df = new_df.drop_duplicates(subset=['id'])
 
             new_df.to_parquet(MISSING_MARKETS_FILE, index=False)
-            logger.info(f"保存 {len(new_markets)} 个缺失市场")
+            logger.info(f"Saved {len(new_markets)} missing markets")
 
-            # 更新映射并重新处理
+            # Update mappings and reprocess
             for m in new_markets:
                 if m.get('token1'):
                     token_mapping[m['token1']] = {'market_id': m['id'], 'answer': m.get('answer1', 'YES')}
                 if m.get('token2'):
                     token_mapping[m['token2']] = {'market_id': m['id'], 'answer': m.get('answer2', 'NO')}
 
-            # 重新提取交易（带完整映射）
-            logger.info("重新提取交易...")
+            # Re-extract trades with the complete mapping
+            logger.info("Re-extracting trades...")
             trades_df = extract_trades(events, token_mapping)
 
-    # 4. 保存结果
+    # 4. Save results
     TRADES_OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     trades_df.to_parquet(TRADES_OUTPUT_FILE, index=False)
-    logger.info(f"保存 {len(trades_df)} 条交易到 {TRADES_OUTPUT_FILE}")
+    logger.info(f"Saved {len(trades_df)} trades to {TRADES_OUTPUT_FILE}")
 
-    # 5. 保存 CSV 预览（最新 1000 条）
+    # 5. Save a CSV preview with the latest 1000 rows.
     save_preview_csv(trades_df, TRADES_PREVIEW_FILE, n_rows=1000)
 
-    # 6. 统计信息
+    # 6. Statistics
     matched = (trades_df['market_id'] != '').sum()
-    logger.info(f"market_id 匹配率: {matched}/{len(trades_df)} ({matched/len(trades_df)*100:.1f}%)")
+    logger.info(f"market_id match rate: {matched}/{len(trades_df)} ({matched/len(trades_df)*100:.1f}%)")
 
 
 def cmd_clean_users(args):
-    """清洗用户数据"""
+    """Clean user data"""
     if not TRADES_OUTPUT_FILE.exists():
-        logger.error(f"交易文件不存在: {TRADES_OUTPUT_FILE}")
-        logger.info("请先运行 fetch-onchain 和 process 命令获取交易数据")
+        logger.error(f"Trades file does not exist: {TRADES_OUTPUT_FILE}")
+        logger.info("Please run fetch-onchain and process first to generate trade data")
         return
 
     DATA_CLEAN_DIR.mkdir(parents=True, exist_ok=True)
@@ -1098,17 +1098,17 @@ def cmd_clean_users(args):
             batch_size=args.batch_size,
             test_rows=args.test
         )
-        logger.info(f"用户数据已保存到: {USERS_CLEAN_FILE}")
+        logger.info(f"User data saved to: {USERS_CLEAN_FILE}")
     except Exception as e:
-        logger.error(f"清洗用户数据失败: {e}")
+        logger.error(f"Failed to clean user data: {e}")
         raise
 
 
 def cmd_clean_trades(args):
-    """清洗交易数据（量化用）"""
+    """Clean trade data (for quant use)"""
     if not TRADES_OUTPUT_FILE.exists():
-        logger.error(f"交易文件不存在: {TRADES_OUTPUT_FILE}")
-        logger.info("请先运行 fetch-onchain 和 process 命令获取交易数据")
+        logger.error(f"Trades file does not exist: {TRADES_OUTPUT_FILE}")
+        logger.info("Please run fetch-onchain and process first to generate trade data")
         return
 
     DATA_CLEAN_DIR.mkdir(parents=True, exist_ok=True)
@@ -1120,53 +1120,53 @@ def cmd_clean_trades(args):
             batch_size=args.batch_size,
             test_rows=args.test
         )
-        logger.info(f"量化交易数据已保存到: {QUANT_CLEAN_FILE}")
+        logger.info(f"Quant trade data saved to: {QUANT_CLEAN_FILE}")
     except Exception as e:
-        logger.error(f"清洗交易数据失败: {e}")
+        logger.error(f"Failed to clean trade data: {e}")
         raise
 
 
 def cmd_clean(args):
-    """运行所有数据清洗"""
-    logger.info("=== 清洗用户数据 ===")
+    """Run all data cleaning"""
+    logger.info("=== Cleaning user data ===")
     cmd_clean_users(args)
 
-    logger.info("\n=== 清洗量化交易数据 ===")
+    logger.info("\n=== Cleaning quant trade data ===")
     cmd_clean_trades(args)
 
-    logger.info("\n数据清洗完成!")
+    logger.info("\nData cleaning complete!")
 
 
 def cmd_update(args):
-    """全量更新"""
-    logger.info("=== 更新市场数据 ===")
+    """Full update"""
+    logger.info("=== Updating market data ===")
     cmd_fetch_markets(args)
 
-    logger.info("\n=== 更新链上数据 ===")
+    logger.info("\n=== Updating on-chain data ===")
     args.continue_from = True
     args.blocks = None
     args.range = None
     cmd_fetch_onchain(args)
 
-    logger.info("\n=== 处理交易 ===")
+    logger.info("\n=== Processing trades ===")
     cmd_process(args)
 
-    # 如果指定了 --clean，也运行数据清洗
+    # If --clean is specified, also run data cleaning
     if getattr(args, 'with_clean', False):
-        logger.info("\n=== 清洗数据 ===")
+        logger.info("\n=== Cleaning data ===")
         args.batch_size = 5_000_000
         args.test = None
         cmd_clean(args)
 
-    logger.info("\n全量更新完成!")
+    logger.info("\nFull update complete!")
 
 
 def cmd_merge_sessions(args):
-    """合并所有 session 文件到主文件"""
+    """Merge all session files into the main files"""
     import glob as glob_module
     import gc
 
-    logger.info("=== 合并 session 文件 ===")
+    logger.info("=== Merging session files ===")
 
     for main_file, pattern, output_dir, file_type in [
         (DECODED_EVENTS_FILE, 'orderfilled_session_*.parquet', DATASET_DIR, 'orderfilled_session'),
@@ -1186,100 +1186,100 @@ def cmd_merge_sessions(args):
         if not session_files:
             continue
 
-        logger.info(f"找到 {len(session_files)} 个 {file_type} 文件")
+        logger.info(f"Found {len(session_files)} {file_type} files")
 
-        # 收集所有文件（主文件 + session文件）
+        # Collect all files (main file + session files)
         all_files = []
         if main_file.exists():
             all_files.append(str(main_file))
         all_files.extend(session_files)
 
         if len(all_files) <= 1:
-            # 只有一个文件，如果是session文件就重命名为主文件
+            # If there is only one file and it is a session file, rename it to the main file
             if session_files and not main_file.exists():
                 import shutil
                 shutil.move(session_files[0], str(main_file))
-                logger.info(f"移动 {session_files[0]} -> {main_file}")
+                logger.info(f"Moved {session_files[0]} -> {main_file}")
             continue
 
-        # 合并所有文件
-        logger.info(f"合并 {len(all_files)} 个文件到 {main_file.name}...")
+        # Merge all files.
+        logger.info(f"Merging {len(all_files)} files into {main_file.name}...")
         tables = [pq.read_table(f) for f in all_files]
         combined = pa.concat_tables(tables)
         pq.write_table(combined, main_file, compression='snappy')
-        logger.info(f"合并完成，共 {combined.num_rows:,} 行")
+        logger.info(f"Merge complete, total {combined.num_rows:,} rows")
 
-        # 删除session文件
+        # Delete session files
         for sf in session_files:
             Path(sf).unlink()
-            logger.info(f"删除 {sf}")
+            logger.info(f"Deleted {sf}")
 
         del tables, combined
         gc.collect()
 
-    logger.info("所有 session 文件合并完成!")
+    logger.info("All session files merged!")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Polymarket 数据工具')
+    parser = argparse.ArgumentParser(description='Polymarket data tools')
     parser.add_argument('-v', '--verbose', action='store_true')
     subparsers = parser.add_subparsers(dest='command')
 
     # fetch-onchain
-    p1 = subparsers.add_parser('fetch-onchain', help='获取链上数据')
-    p1.add_argument('-b', '--blocks', type=int, help='最近N个区块')
+    p1 = subparsers.add_parser('fetch-onchain', help='Fetch on-chain data')
+    p1.add_argument('-b', '--blocks', type=int, help='Most recent N blocks')
     p1.add_argument('-r', '--range', nargs=2, type=int, metavar=('START', 'END'))
     p1.add_argument('-c', '--continue', dest='continue_from', action='store_true')
     p1.add_argument('-a', '--alchemy', action='store_true')
     p1.add_argument('-m', '--merge', action='store_true',
-                    help='完成后合并临时文件到主文件（默认不合并）')
+                    help='Merge temporary files into the main files after completion (default: do not merge)')
 
     # fetch-markets
-    p2 = subparsers.add_parser('fetch-markets', help='增量获取新市场')
+    p2 = subparsers.add_parser('fetch-markets', help='Incrementally fetch new markets')
     p2.add_argument('-c', '--continue', dest='continue_from', action='store_true',
-                    help='从上次断点继续获取')
+                    help='Continue fetching from the last checkpoint')
 
     # update-markets
-    p2b = subparsers.add_parser('update-markets', help='更新未resolved市场状态')
+    p2b = subparsers.add_parser('update-markets', help='Update markets that are not resolved')
     p2b.add_argument('-c', '--continue', dest='continue_from', action='store_true',
-                     help='从上次断点继续更新')
+                     help='Continue updating from the last checkpoint')
 
     # process
-    p3 = subparsers.add_parser('process', help='处理交易数据（小数据集）')
-    p3.add_argument('--skip-missing', action='store_true', help='跳过缺失 token 补全')
+    p3 = subparsers.add_parser('process', help='Process trade data (small datasets)')
+    p3.add_argument('--skip-missing', action='store_true', help='Skip missing token backfill')
 
     # process-historical
-    p_hist = subparsers.add_parser('process-historical', help='分批处理历史大文件')
+    p_hist = subparsers.add_parser('process-historical', help='Process large historical files in batches')
     p_hist.add_argument('-b', '--batch-size', type=int, default=1000000,
-                        help='每批处理行数（默认100万）')
+                        help='Rows processed per batch (default: 1,000,000)')
     p_hist.add_argument('-c', '--continue', dest='continue_from', action='store_true',
-                        help='从上次断点继续处理')
+                        help='Continue processing from the last checkpoint')
     p_hist.add_argument('--test-batches', type=int, default=None,
-                        help='测试模式：只处理前N批')
+                        help='Test mode: process only the first N batches')
 
     # clean-users
-    p4 = subparsers.add_parser('clean-users', help='清洗用户数据')
-    p4.add_argument('-b', '--batch-size', type=int, default=5_000_000, help='批处理大小')
-    p4.add_argument('-t', '--test', type=int, default=None, help='测试模式：只处理前N行')
+    p4 = subparsers.add_parser('clean-users', help='Clean user data')
+    p4.add_argument('-b', '--batch-size', type=int, default=5_000_000, help='Batch size')
+    p4.add_argument('-t', '--test', type=int, default=None, help='Test mode: process only the first N rows')
 
     # clean-trades
-    p5 = subparsers.add_parser('clean-trades', help='清洗交易数据（量化用）')
-    p5.add_argument('-b', '--batch-size', type=int, default=5_000_000, help='批处理大小')
-    p5.add_argument('-t', '--test', type=int, default=None, help='测试模式：只处理前N行')
+    p5 = subparsers.add_parser('clean-trades', help='Clean trade data (for quant use)')
+    p5.add_argument('-b', '--batch-size', type=int, default=5_000_000, help='Batch size')
+    p5.add_argument('-t', '--test', type=int, default=None, help='Test mode: process only the first N rows')
 
     # clean (both)
-    p6 = subparsers.add_parser('clean', help='运行所有数据清洗')
-    p6.add_argument('-b', '--batch-size', type=int, default=5_000_000, help='批处理大小')
-    p6.add_argument('-t', '--test', type=int, default=None, help='测试模式：只处理前N行')
+    p6 = subparsers.add_parser('clean', help='Run all data cleaning')
+    p6.add_argument('-b', '--batch-size', type=int, default=5_000_000, help='Batch size')
+    p6.add_argument('-t', '--test', type=int, default=None, help='Test mode: process only the first N rows')
 
     # update
-    p7 = subparsers.add_parser('update', help='全量更新')
+    p7 = subparsers.add_parser('update', help='Full update')
     p7.add_argument('-a', '--alchemy', action='store_true')
-    p7.add_argument('--skip-missing', action='store_true', help='跳过缺失 token 补全')
-    p7.add_argument('--clean', dest='with_clean', action='store_true', help='同时运行数据清洗')
+    p7.add_argument('--skip-missing', action='store_true', help='Skip missing token backfill')
+    p7.add_argument('--clean', dest='with_clean', action='store_true', help='Also run data cleaning')
 
     # merge-sessions
-    p8 = subparsers.add_parser('merge-sessions', help='合并所有 session 文件到主文件')
+    p8 = subparsers.add_parser('merge-sessions', help='Merge all session files into the main files')
 
     args = parser.parse_args()
     setup_logging(args.verbose)

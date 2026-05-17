@@ -1,5 +1,5 @@
 """
-Gamma API 客户端 - 获取市场元数据
+Gamma API client for fetching market metadata.
 """
 
 import json
@@ -15,20 +15,20 @@ logger = logging.getLogger(__name__)
 
 
 class GammaApiClient:
-    """Gamma API 客户端"""
+    """Gamma API client."""
 
     def __init__(self, timeout: int = 60, max_retries: int = 5):
         self.base_url = GAMMA_API_URL
         self.timeout = timeout
         self.max_retries = max_retries
         self.session = requests.Session()
-        # 设置默认 headers
+        # Set default headers.
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
         })
 
     def _request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Any]:
-        """发送请求"""
+        """Send a request."""
         url = f"{self.base_url}/{endpoint}"
 
         for attempt in range(self.max_retries):
@@ -39,29 +39,29 @@ class GammaApiClient:
                     return resp.json()
                 elif resp.status_code == 429:
                     wait_time = 5 * (attempt + 1)
-                    logger.warning(f"API 限流，等待 {wait_time} 秒后重试...")
+                    logger.warning(f"API rate limited, waiting {wait_time} seconds before retrying...")
                     time.sleep(wait_time)
                     continue
                 else:
-                    logger.error(f"API 错误 {resp.status_code}")
+                    logger.error(f"API error {resp.status_code}")
                     time.sleep(3)
                     continue
 
             except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout) as e:
                 wait_time = 5 * (attempt + 1)
-                logger.warning(f"连接超时 (尝试 {attempt+1}/{self.max_retries})，等待 {wait_time} 秒后重试...")
+                logger.warning(f"Connection timed out (attempt {attempt+1}/{self.max_retries}), waiting {wait_time} seconds before retrying...")
                 time.sleep(wait_time)
                 continue
             except requests.exceptions.RequestException as e:
-                logger.error(f"网络错误 (尝试 {attempt+1}/{self.max_retries}): {e}")
+                logger.error(f"Network error (attempt {attempt+1}/{self.max_retries}): {e}")
                 time.sleep(5)
                 continue
 
-        logger.error(f"请求失败，已重试 {self.max_retries} 次")
+        logger.error(f"Request failed after {self.max_retries} retries")
         return None
 
     def get_markets(self, limit: int = 500, offset: int = 0) -> List[Dict[str, Any]]:
-        """获取市场列表"""
+        """Get a list of markets."""
         params = {
             'limit': limit,
             'offset': offset,
@@ -74,7 +74,7 @@ class GammaApiClient:
         return [self._parse_market(m) for m in data]
 
     def iter_all_markets(self, batch_size: int = 500) -> Generator[Dict[str, Any], None, None]:
-        """迭代获取所有市场"""
+        """Iterate through all markets."""
         offset = 0
         while True:
             markets = self.get_markets(limit=batch_size, offset=offset)
@@ -88,7 +88,7 @@ class GammaApiClient:
             time.sleep(0.5)
 
     def fetch_all_markets(self, max_markets: Optional[int] = None) -> List[Dict[str, Any]]:
-        """获取所有市场"""
+        """Fetch all markets."""
         markets = []
         for m in self.iter_all_markets():
             markets.append(m)
@@ -97,12 +97,12 @@ class GammaApiClient:
         return markets
 
     def _parse_market(self, raw: Dict[str, Any]) -> Dict[str, Any]:
-        """解析市场数据"""
+        """Parse market data."""
         outcomes = self._parse_json(raw.get('outcomes', '[]'))
         clob_tokens = self._parse_json(raw.get('clobTokenIds', '[]'))
         outcome_prices = self._parse_json(raw.get('outcomePrices', '[]'))
 
-        # 解析 event 信息
+        # Parse event information.
         events = raw.get('events', [])
         event_info = events[0] if events else {}
 
@@ -118,14 +118,14 @@ class GammaApiClient:
             'slug': raw.get('slug', ''),
             'volume': raw.get('volume', ''),
             'created_at': raw.get('createdAt', ''),
-            # 状态字段 - 使用 closed 而不是 resolved
+            # Status fields: use closed rather than resolved.
             'closed': raw.get('closed', False),
             'active': raw.get('active', True),
             'archived': raw.get('archived', False),
             'end_date': raw.get('endDate', ''),
-            # 结算结果 - outcomePrices 数组 [price1, price2]，值接近1的选项获胜
+            # Settlement result: outcomePrices is [price1, price2], and the option near 1 wins.
             'outcome_prices': str(outcome_prices) if outcome_prices else '[]',
-            # Event 信息
+            # Event information.
             'event_id': event_info.get('id', ''),
             'event_slug': event_info.get('slug', ''),
             'event_title': event_info.get('title', ''),
@@ -142,7 +142,7 @@ class GammaApiClient:
         return []
 
     def get_token_mapping(self, markets: Optional[List[Dict]] = None) -> Dict[str, Dict]:
-        """创建 token_id -> market 映射"""
+        """Create a token_id -> market mapping."""
         if markets is None:
             markets = self.fetch_all_markets()
 
@@ -161,7 +161,7 @@ class GammaApiClient:
             return False
 
     def get_market_by_token(self, token_id: str) -> Optional[Dict[str, Any]]:
-        """通过 token_id 获取市场"""
+        """Get a market by token_id."""
         params = {'clob_token_ids': token_id}
         data = self._request('markets', params)
         if data and len(data) > 0:
@@ -169,7 +169,7 @@ class GammaApiClient:
         return None
 
     def fetch_missing_tokens(self, token_ids: List[str]) -> List[Dict[str, Any]]:
-        """批量获取缺失的 token 对应的市场"""
+        """Fetch markets for missing tokens in batch."""
         markets = []
         seen_market_ids = set()
 
@@ -178,8 +178,8 @@ class GammaApiClient:
             if market and market['id'] not in seen_market_ids:
                 markets.append(market)
                 seen_market_ids.add(market['id'])
-                logger.info(f"找到市场 {market['id']} (token: {token_id[:20]}...)")
+                logger.info(f"Found market {market['id']} (token: {token_id[:20]}...)")
             time.sleep(0.3)
 
-        logger.info(f"共找到 {len(markets)} 个缺失市场")
+        logger.info(f"Found a total of {len(markets)} missing markets")
         return markets

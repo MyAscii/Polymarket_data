@@ -1,5 +1,5 @@
 """
-Polygon RPC 客户端和日志获取
+Polygon RPC client and log fetching.
 """
 
 import logging
@@ -19,45 +19,45 @@ logger = logging.getLogger(__name__)
 
 
 class PolygonRpcClient:
-    """Polygon RPC 客户端"""
+    """Polygon RPC client."""
 
-    # Polygon 出块时间约 2 秒
+    # Polygon block time is about 2 seconds.
     BLOCK_TIME = 2
 
     def __init__(self, use_alchemy: bool = False):
         rpc_url = get_rpc_url(use_alchemy)
         self.w3 = Web3(Web3.HTTPProvider(rpc_url))
-        # Polygon 是 POA 链，需要添加中间件处理 extraData 字段
+        # Polygon is a POA chain, so middleware is required for the extraData field.
         self.w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
-        # web3.py 要求 checksum 地址格式
+        # web3.py requires checksum address formatting.
         self.contract_addresses = [Web3.to_checksum_address(addr) for addr in POLYMARKET_CONTRACTS.values()]
         self._timestamp_cache: Dict[int, int] = {}
-        logger.info(f"RPC 连接: {rpc_url.split('/v2/')[0] if '/v2/' in rpc_url else rpc_url}")
+        logger.info(f"RPC connection: {rpc_url.split('/v2/')[0] if '/v2/' in rpc_url else rpc_url}")
 
     def get_latest_block(self) -> int:
         return self.w3.eth.block_number
 
     def get_logs(self, start_block: int, end_block: int) -> Optional[List[Dict[str, Any]]]:
-        """获取区块范围内的 OrderFilled 日志
+        """Get OrderFilled logs within a block range.
 
-        返回:
-            List[Dict]: 成功时返回日志列表（可能为空）
-            None: RPC 请求失败时返回 None
+        Returns:
+            List[Dict]: log list on success, which may be empty
+            None: returned when the RPC request fails
         """
         try:
             logs = self.w3.eth.get_logs({
                 'fromBlock': start_block,
                 'toBlock': end_block,
                 'address': self.contract_addresses,
-                'topics': [ORDER_FILLED_TOPIC]  # 只获取 OrderFilled 事件
+                'topics': [ORDER_FILLED_TOPIC]  # Fetch only OrderFilled events.
             })
             return [dict(log) for log in logs]
         except Exception as e:
-            logger.error(f"获取日志失败: {e}")
-            return None  # 返回 None 表示请求失败，区分于空列表（无数据）
+            logger.error(f"Failed to get logs: {e}")
+            return None  # None means request failure, distinct from an empty list for no data.
 
     def get_block_timestamp(self, block_number: int) -> int:
-        """获取区块时间戳"""
+        """Get a block timestamp."""
         if block_number in self._timestamp_cache:
             return self._timestamp_cache[block_number]
         try:
@@ -66,18 +66,18 @@ class PolygonRpcClient:
             self._timestamp_cache[block_number] = ts
             return ts
         except Exception as e:
-            # 不要返回错误的时间戳，而是抛出异常让调用方处理
-            raise RuntimeError(f"无法获取区块 {block_number} 的时间戳: {e}")
+            # Do not return an incorrect timestamp; let the caller handle the error.
+            raise RuntimeError(f"Unable to get the timestamp for block {block_number}: {e}")
 
     def batch_get_timestamps(self, block_numbers: List[int]) -> Dict[int, int]:
-        """批量获取时间戳"""
+        """Get timestamps in batch."""
         result = {}
         for bn in block_numbers:
             result[bn] = self.get_block_timestamp(bn)
         return result
 
     def estimate_timestamps(self, block_numbers: List[int]) -> Dict[int, int]:
-        """估算时间戳（减少 RPC 调用）"""
+        """Estimate timestamps to reduce RPC calls."""
         if not block_numbers:
             return {}
 
@@ -99,7 +99,7 @@ class PolygonRpcClient:
 
 
 class LogFetcher:
-    """链上日志获取器"""
+    """On-chain log fetcher."""
 
     def __init__(self, use_alchemy: bool = False):
         self.client = PolygonRpcClient(use_alchemy=use_alchemy)
@@ -108,21 +108,21 @@ class LogFetcher:
         }
 
     def fetch_block_range(self, start_block: int, end_block: int) -> Optional[List[Dict[str, Any]]]:
-        """获取指定区块范围的日志
+        """Get logs for the specified block range.
 
-        返回:
-            List[Dict]: 成功时返回记录列表（可能为空）
-            None: RPC 请求失败时返回 None
+        Returns:
+            List[Dict]: record list on success, which may be empty
+            None: returned when the RPC request fails
         """
-        logger.info(f"获取区块 {start_block} - {end_block}")
+        logger.info(f"Fetching blocks {start_block} - {end_block}")
 
         logs = self.client.get_logs(start_block, end_block)
         if logs is None:
-            return None  # RPC 失败
+            return None  # RPC failure.
         if not logs:
-            return []  # 成功但无数据
+            return []  # Success, but no data.
 
-        # 获取时间戳 - 优先使用 RPC 返回的 blockTimestamp
+        # Get timestamps, preferring blockTimestamp returned by the RPC.
         block_timestamps = {}
         unique_blocks_without_ts = set()
 
@@ -131,7 +131,7 @@ class LogFetcher:
             if isinstance(bn, str):
                 bn = int(bn, 16) if bn.startswith('0x') else int(bn)
 
-            # 检查 RPC 是否返回了 blockTimestamp
+            # Check whether the RPC returned blockTimestamp.
             block_ts = log.get('blockTimestamp')
             if block_ts:
                 if isinstance(block_ts, str):
@@ -142,7 +142,7 @@ class LogFetcher:
             else:
                 unique_blocks_without_ts.add(bn)
 
-        # 只对没有时间戳的区块进行查询
+        # Query only the blocks missing timestamps.
         if unique_blocks_without_ts:
             missing_timestamps = (
                 self.client.batch_get_timestamps(sorted(unique_blocks_without_ts))
@@ -151,19 +151,19 @@ class LogFetcher:
             )
             block_timestamps.update(missing_timestamps)
 
-        # 处理日志
+        # Process logs.
         records = []
         for log in logs:
             record = self._process_log(log, start_block, end_block, block_timestamps)
             if record:
                 records.append(record)
 
-        logger.info(f"获取到 {len(records)} 条记录")
+        logger.info(f"Fetched {len(records)} records")
         return records
 
     def _process_log(self, log: Dict, start_block: int, end_block: int,
                      block_timestamps: Dict[int, int]) -> Optional[Dict[str, Any]]:
-        """处理单个日志"""
+        """Process a single log."""
         try:
             log_address = log.get('address', '').lower()
             contract_name = self.address_to_name.get(log_address, 'Unknown')
@@ -172,16 +172,16 @@ class LogFetcher:
             if isinstance(bn, str):
                 bn = int(bn, 16) if bn.startswith('0x') else int(bn)
 
-            # 获取区块时间戳，如果缺失则记录警告并尝试单独获取
+            # Get the block timestamp; if it is missing, warn and fetch it separately.
             timestamp = block_timestamps.get(bn)
             if timestamp is None:
-                logger.warning(f"区块 {bn} 缺失时间戳，尝试单独获取...")
+                logger.warning(f"Block {bn} is missing a timestamp, trying to fetch it separately...")
                 try:
                     timestamp = self._get_block_timestamp(bn)
                     block_timestamps[bn] = timestamp
                 except Exception as e:
-                    logger.error(f"无法获取区块 {bn} 的时间戳: {e}")
-                    # 跳过这条记录而不是使用错误的时间戳
+                    logger.error(f"Unable to get the timestamp for block {bn}: {e}")
+                    # Skip this record instead of using an incorrect timestamp.
                     return None
 
             tx_hash = log['transactionHash']
@@ -190,7 +190,7 @@ class LogFetcher:
 
             topics = [t.hex() if hasattr(t, 'hex') else t for t in log['topics']]
 
-            # 识别事件名
+            # Identify the event name.
             event_name = 'Unknown'
             event_sig = ''
             if topics:
@@ -214,16 +214,16 @@ class LogFetcher:
                 'event_signature': event_sig
             }
         except Exception as e:
-            logger.warning(f"处理日志失败: {e}")
+            logger.warning(f"Failed to process log: {e}")
             return None
 
     def fetch_range_in_batches(self, start_block: int, end_block: int,
                                 batch_size: int = BLOCKS_PER_BATCH) -> Optional[List[Dict[str, Any]]]:
-        """分批获取
+        """Fetch in batches.
 
-        返回:
-            List[Dict]: 成功时返回记录列表（可能为空）
-            None: RPC 请求失败时返回 None
+        Returns:
+            List[Dict]: record list on success, which may be empty
+            None: returned when the RPC request fails
         """
         all_records = []
         current = start_block
@@ -232,14 +232,14 @@ class LogFetcher:
             batch_end = min(current + batch_size - 1, end_block)
             records = self.fetch_block_range(current, batch_end)
             if records is None:
-                # RPC 失败，返回 None 让上层处理
+                # RPC failed, return None so the caller can handle it.
                 return None
             all_records.extend(records)
             current = batch_end + 1
             if current <= end_block:
                 time.sleep(REQUEST_DELAY)
 
-        logger.info(f"总共获取 {len(all_records)} 条记录")
+        logger.info(f"Fetched a total of {len(all_records)} records")
         return all_records
 
     def get_latest_block(self) -> int:

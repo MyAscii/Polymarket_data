@@ -1,8 +1,8 @@
 """
-fetchers - 数据获取
+fetchers - data retrieval
 
-- rpc: Polygon 链上数据
-- gamma: Gamma API 市场数据
+- rpc: Polygon on-chain data
+- gamma: Gamma API market data
 """
 
 from .rpc import PolygonRpcClient, LogFetcher

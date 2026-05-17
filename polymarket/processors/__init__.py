@@ -1,9 +1,9 @@
 """
-processors - 数据处理
+processors - data processing
 
-- decoder: ABI 解码
-- trades: 交易提取、market_id 关联、缺失 token 处理
-- cleaner: 数据清洗（用户数据、交易数据）
+- decoder: ABI decoding
+- trades: trade extraction, market_id mapping, missing token handling
+- cleaner: data cleaning for user and trade datasets
 """
 
 from .decoder import EventDecoder

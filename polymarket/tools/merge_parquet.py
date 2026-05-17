@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-合并多个 parquet 文件
+Merge multiple parquet files.
 
 nohup python scripts/merge_parquet.py \
   data/dataset/orderfilled.parquet \
@@ -9,7 +9,7 @@ nohup python scripts/merge_parquet.py \
   -y \
   > logs/merge_orderfilled.log 2>&1 &
 
-支持指定输入文件列表和输出文件，按顺序合并
+Supports specifying input files and an output file, merged in order.
 """
 import sys
 import argparse
@@ -28,110 +28,110 @@ logger = logging.getLogger(__name__)
 
 def merge_parquet_files(input_files, output_file, dry_run=False, auto_yes=False):
     """
-    合并多个 parquet 文件
+    Merge multiple parquet files.
 
     Args:
-        input_files: 输入文件列表（按顺序）
-        output_file: 输出文件路径
-        dry_run: 是否只显示信息不实际合并
-        auto_yes: 自动确认覆盖
+        input_files: list of input files, in order
+        output_file: output file path
+        dry_run: show information only without performing the merge
+        auto_yes: automatically confirm overwrite
     """
-    # 验证输入文件
+    # Validate input files.
     valid_files = []
     total_rows = 0
 
-    logger.info("=== 检查输入文件 ===")
+    logger.info("=== Checking input files ===")
     for i, file_path in enumerate(input_files, 1):
         p = Path(file_path)
         if not p.exists():
-            logger.error(f"[{i}] 文件不存在: {file_path}")
+            logger.error(f"[{i}] File does not exist: {file_path}")
             continue
 
         try:
-            # 只读取元数据，不加载实际数据
+            # Read metadata only without loading actual data.
             parquet_file = pq.ParquetFile(file_path)
             rows = parquet_file.metadata.num_rows
             size_mb = p.stat().st_size / 1024 / 1024
             total_rows += rows
             valid_files.append(file_path)
-            logger.info(f"[{i}] {p.name}: {rows:,} 行, {size_mb:.1f} MB")
+            logger.info(f"[{i}] {p.name}: {rows:,} rows, {size_mb:.1f} MB")
         except Exception as e:
-            logger.error(f"[{i}] 读取失败 {file_path}: {e}")
+            logger.error(f"[{i}] Read failed for {file_path}: {e}")
             continue
 
     if not valid_files:
-        logger.error("没有有效的输入文件")
+        logger.error("No valid input files")
         return False
 
-    logger.info(f"\n总计: {len(valid_files)} 个文件, {total_rows:,} 行")
+    logger.info(f"\nTotal: {len(valid_files)} files, {total_rows:,} rows")
 
     if dry_run:
-        logger.info(f"\n[DRY RUN] 将输出到: {output_file}")
+        logger.info(f"\n[DRY RUN] Would write to: {output_file}")
         return True
 
-    # 检查输出文件
+    # Check the output file.
     output_path = Path(output_file)
     if output_path.exists():
-        logger.warning(f"输出文件已存在，将覆盖: {output_file}")
+        logger.warning(f"Output file already exists and will be overwritten: {output_file}")
         if not auto_yes:
-            response = input("确认覆盖？(yes/no): ")
+            response = input("Confirm overwrite? (yes/no): ")
             if response.lower() not in ['yes', 'y']:
-                logger.info("取消操作")
+                logger.info("Operation cancelled")
                 return False
         else:
-            logger.info("自动确认覆盖（--yes）")
+            logger.info("Overwrite confirmed automatically (--yes)")
 
-    # 合并文件（流式写入 + 分批读取）
-    logger.info(f"\n=== 开始合并（流式写入 + 分批读取）===")
+    # Merge files with streaming writes and batched reads.
+    logger.info("\n=== Starting merge (streaming writes + batched reads) ===")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         writer = None
         total_rows_written = 0
-        batch_size = 500000  # 每批读取 50 万行，减少内存占用
+        batch_size = 500000  # Read 500k rows per batch to reduce memory usage.
 
         for i, file_path in enumerate(valid_files, 1):
-            logger.info(f"[{i}/{len(valid_files)}] 处理 {Path(file_path).name}")
+            logger.info(f"[{i}/{len(valid_files)}] Processing {Path(file_path).name}")
 
-            # 打开 parquet 文件
+            # Open the parquet file.
             parquet_file = pq.ParquetFile(file_path)
             file_rows = 0
 
-            # 第一次创建 writer（需要读取第一批数据获取 schema）
+            # Create the writer the first time after reading the first batch schema.
             if writer is None:
-                # 创建迭代器
+                # Create an iterator.
                 batch_iter = parquet_file.iter_batches(batch_size=batch_size)
-                # 读取第一批获取 schema
+                # Read the first batch to get the schema.
                 first_batch = next(batch_iter)
                 target_schema = first_batch.schema
                 writer = pq.ParquetWriter(output_file, target_schema, compression='snappy')
                 writer.write_batch(first_batch)
                 file_rows += len(first_batch)
                 total_rows_written += len(first_batch)
-                logger.info(f"  已写入第 1 批: {len(first_batch):,} 行")
+                logger.info(f"  Wrote batch 1: {len(first_batch):,} rows")
 
-                # 继续处理剩余批次（使用同一个迭代器）
+                # Continue processing the remaining batches with the same iterator.
                 batch_num = 2
                 for batch in batch_iter:
                     writer.write_batch(batch)
                     file_rows += len(batch)
                     total_rows_written += len(batch)
-                    logger.info(f"  已写入第 {batch_num} 批: {len(batch):,} 行（累计 {total_rows_written:,} 行）")
+                    logger.info(f"  Wrote batch {batch_num}: {len(batch):,} rows (total {total_rows_written:,} rows)")
                     batch_num += 1
             else:
-                # 后续文件：统一 schema 后分批写入
+                # Later files: normalize schema and then write in batches.
                 batch_num = 1
                 for batch in parquet_file.iter_batches(batch_size=batch_size):
-                    # 将 batch 转换为目标 schema
+                    # Convert the batch to the target schema.
                     table = pa.Table.from_batches([batch])
-                    # 尝试转换到目标 schema（会自动处理类型转换）
+                    # Try converting to the target schema automatically.
                     try:
                         table = table.cast(target_schema)
                     except Exception as e:
-                        # 如果自动转换失败，使用 pandas 转换
+                        # If automatic conversion fails, convert with pandas.
                         import pandas as pd
                         df = table.to_pandas()
-                        # 转换类型
+                        # Convert types.
                         for field in target_schema:
                             if field.name in df.columns:
                                 if pa.types.is_string(field.type):
@@ -144,26 +144,26 @@ def merge_parquet_files(input_files, output_file, dry_run=False, auto_yes=False)
                     writer.write_batch(batch)
                     file_rows += len(batch)
                     total_rows_written += len(batch)
-                    if batch_num % 10 == 0 or len(batch) < batch_size:  # 每 10 批或最后一批输出
-                        logger.info(f"  已写入第 {batch_num} 批: {len(batch):,} 行（累计 {total_rows_written:,} 行）")
+                    if batch_num % 10 == 0 or len(batch) < batch_size:  # Every 10 batches or the last batch.
+                        logger.info(f"  Wrote batch {batch_num}: {len(batch):,} rows (total {total_rows_written:,} rows)")
                     batch_num += 1
 
-            logger.info(f"  ✓ 文件完成，共 {file_rows:,} 行")
+            logger.info(f"  ✓ File complete, total {file_rows:,} rows")
 
-        # 关闭 writer
+        # Close writer.
         if writer:
             writer.close()
 
         output_size_mb = output_path.stat().st_size / 1024 / 1024
-        logger.info(f"\n=== 合并完成 ===")
-        logger.info(f"输出文件: {output_file}")
-        logger.info(f"总行数: {total_rows_written:,}")
-        logger.info(f"文件大小: {output_size_mb:.1f} MB")
+        logger.info("\n=== Merge complete ===")
+        logger.info(f"Output file: {output_file}")
+        logger.info(f"Total rows: {total_rows_written:,}")
+        logger.info(f"File size: {output_size_mb:.1f} MB")
 
         return True
 
     except Exception as e:
-        logger.error(f"合并失败: {e}")
+        logger.error(f"Merge failed: {e}")
         if writer:
             writer.close()
         return False
@@ -171,18 +171,18 @@ def merge_parquet_files(input_files, output_file, dry_run=False, auto_yes=False)
 
 def main():
     parser = argparse.ArgumentParser(
-        description='合并多个 parquet 文件',
+        description='Merge multiple parquet files',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-示例:
-  # 合并三个文件
+Examples:
+  # Merge three files
   python scripts/merge_parquet.py \\
     data/dataset/orderfilled.parquet \\
     data/dataset/orderfilled_session_*.parquet \\
     data/dataset/orderfilled_refetched_*.parquet \\
     -o data/dataset/orderfilled_merged.parquet
 
-  # 先查看信息不实际合并
+  # Preview information without performing the merge
   python scripts/merge_parquet.py file1.parquet file2.parquet -o output.parquet --dry-run
         """
     )
@@ -190,35 +190,35 @@ def main():
     parser.add_argument(
         'input_files',
         nargs='+',
-        help='输入 parquet 文件（按顺序合并）'
+        help='Input parquet files (merged in order)'
     )
 
     parser.add_argument(
         '-o', '--output',
         required=True,
-        help='输出文件路径'
+        help='Output file path'
     )
 
     parser.add_argument(
         '--dry-run',
         action='store_true',
-        help='只显示信息，不实际合并'
+        help='Show information only without merging'
     )
 
     parser.add_argument(
         '--log-file',
-        help='日志文件路径（用于 nohup 运行）'
+        help='Log file path (for nohup runs)'
     )
 
     parser.add_argument(
         '-y', '--yes',
         action='store_true',
-        help='自动确认覆盖，不询问（用于 nohup 运行）'
+        help='Automatically confirm overwrite without prompting (for nohup runs)'
     )
 
     args = parser.parse_args()
 
-    # 如果指定了日志文件，重新配置 logging
+    # Reconfigure logging if a log file is specified.
     if args.log_file:
         logging.basicConfig(
             level=logging.INFO,
@@ -226,12 +226,12 @@ def main():
             datefmt='%Y-%m-%d %H:%M:%S',
             handlers=[
                 logging.FileHandler(args.log_file),
-                logging.StreamHandler()  # 同时输出到终端
+                logging.StreamHandler()  # Also output to the terminal.
             ],
             force=True
         )
 
-    # 展开 glob pattern
+    # Expand glob patterns.
     import glob
     input_files = []
     for pattern in args.input_files:
@@ -239,11 +239,11 @@ def main():
         if matched:
             input_files.extend(sorted(matched))
         else:
-            # 不是 pattern，直接添加
+            # Not a pattern, add directly.
             input_files.append(pattern)
 
     if not input_files:
-        logger.error("没有输入文件")
+        logger.error("No input files")
         sys.exit(1)
 
     success = merge_parquet_files(input_files, args.output, args.dry_run, args.yes)

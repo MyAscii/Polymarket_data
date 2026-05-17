@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-专门用于合并 orderfilled 文件的脚本
+Script specifically for merging orderfilled files.
 
-处理 schema 不一致的问题：
-- 统一数据类型为 string
-- 统一列顺序
-- 处理缺失列
+Handles schema mismatch issues:
+- Normalize data types to string
+- Normalize column order
+- Handle missing columns
 """
 import sys
 import argparse
@@ -24,38 +24,38 @@ logger = logging.getLogger(__name__)
 
 def convert_batch_to_target_schema(batch, target_schema):
     """
-    将 batch 转换为目标 schema
+    Convert a batch to the target schema.
 
     Args:
         batch: RecordBatch
-        target_schema: 目标 schema
+        target_schema: target schema
 
     Returns:
-        转换后的 RecordBatch
+        Converted RecordBatch
     """
     import pandas as pd
 
-    # 转换为 pandas
+    # Convert to pandas.
     df = batch.to_pandas()
 
-    # 创建新的 DataFrame，按照目标 schema
+    # Create a new DataFrame following the target schema.
     new_df = pd.DataFrame()
 
     for field in target_schema:
         col_name = field.name
 
         if col_name in df.columns:
-            # 列存在，转换类型
+            # Column exists, convert its type.
             if pa.types.is_string(field.type):
-                # 转换为字符串
+                # Convert to string.
                 new_df[col_name] = df[col_name].astype(str)
             elif pa.types.is_integer(field.type):
-                # 转换为整数
+                # Convert to integer.
                 new_df[col_name] = pd.to_numeric(df[col_name], errors='coerce').fillna(0).astype('int64')
             else:
                 new_df[col_name] = df[col_name]
         else:
-            # 列不存在，创建空列
+            # Column does not exist, create an empty column.
             if pa.types.is_string(field.type):
                 new_df[col_name] = ''
             elif pa.types.is_integer(field.type):
@@ -63,51 +63,51 @@ def convert_batch_to_target_schema(batch, target_schema):
             else:
                 new_df[col_name] = None
 
-    # 转换回 Arrow Table
+    # Convert back to an Arrow Table.
     table = pa.Table.from_pandas(new_df, schema=target_schema)
     return table.to_batches()[0]
 
 
 def merge_orderfilled_files(file1, file2, output_file, auto_yes=False):
     """
-    合并两个 orderfilled 文件
+    Merge two orderfilled files.
 
     Args:
-        file1: 第一个文件（需要转换 schema）
-        file2: 第二个文件（作为 schema 基准）
-        output_file: 输出文件
-        auto_yes: 自动确认覆盖
+        file1: first file (schema conversion required)
+        file2: second file (used as the schema baseline)
+        output_file: output file
+        auto_yes: automatically confirm overwrite
     """
-    logger.info("=== 检查输入文件 ===")
+    logger.info("=== Checking input files ===")
 
-    # 检查文件
+    # Check files.
     pf1 = pq.ParquetFile(file1)
     pf2 = pq.ParquetFile(file2)
 
-    logger.info(f"[1] {Path(file1).name}: {pf1.metadata.num_rows:,} 行")
-    logger.info(f"[2] {Path(file2).name}: {pf2.metadata.num_rows:,} 行")
-    logger.info(f"总计: {pf1.metadata.num_rows + pf2.metadata.num_rows:,} 行")
+    logger.info(f"[1] {Path(file1).name}: {pf1.metadata.num_rows:,} rows")
+    logger.info(f"[2] {Path(file2).name}: {pf2.metadata.num_rows:,} rows")
+    logger.info(f"Total: {pf1.metadata.num_rows + pf2.metadata.num_rows:,} rows")
 
-    # 获取目标 schema（使用第二个文件的 schema）
+    # Get the target schema from the second file.
     target_schema = pf2.schema_arrow
-    logger.info(f"\n目标 schema（基于文件2）:")
+    logger.info("\nTarget schema (based on file 2):")
     for field in target_schema:
         logger.info(f"  {field.name}: {field.type}")
 
-    # 检查输出文件
+    # Check the output file.
     output_path = Path(output_file)
     if output_path.exists():
-        logger.warning(f"输出文件已存在，将覆盖: {output_file}")
+        logger.warning(f"Output file already exists and will be overwritten: {output_file}")
         if not auto_yes:
-            response = input("确认覆盖？(yes/no): ")
+            response = input("Confirm overwrite? (yes/no): ")
             if response.lower() not in ['yes', 'y']:
-                logger.info("取消操作")
+                logger.info("Operation cancelled")
                 return False
         else:
-            logger.info("自动确认覆盖（--yes）")
+            logger.info("Overwrite confirmed automatically (--yes)")
 
-    # 开始合并
-    logger.info(f"\n=== 开始合并 ===")
+    # Start merging.
+    logger.info("\n=== Starting merge ===")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -115,24 +115,24 @@ def merge_orderfilled_files(file1, file2, output_file, auto_yes=False):
         total_rows_written = 0
         batch_size = 500000
 
-        # 处理第一个文件（需要转换 schema）
-        logger.info(f"[1/2] 处理 {Path(file1).name}（转换 schema）")
+        # Process the first file and convert its schema.
+        logger.info(f"[1/2] Processing {Path(file1).name} (converting schema)")
         batch_iter1 = pf1.iter_batches(batch_size=batch_size)
         batch_num = 1
 
         for batch in batch_iter1:
-            # 转换 schema
+            # Convert schema.
             converted_batch = convert_batch_to_target_schema(batch, target_schema)
             writer.write_batch(converted_batch)
             total_rows_written += len(converted_batch)
             if batch_num % 10 == 0:
-                logger.info(f"  已写入第 {batch_num} 批: {len(converted_batch):,} 行（累计 {total_rows_written:,} 行）")
+                logger.info(f"  Wrote batch {batch_num}: {len(converted_batch):,} rows (total {total_rows_written:,} rows)")
             batch_num += 1
 
-        logger.info(f"  ✓ 文件1完成，共 {pf1.metadata.num_rows:,} 行")
+        logger.info(f"  ✓ File 1 complete, total {pf1.metadata.num_rows:,} rows")
 
-        # 处理第二个文件（直接写入）
-        logger.info(f"[2/2] 处理 {Path(file2).name}")
+        # Process the second file directly.
+        logger.info(f"[2/2] Processing {Path(file2).name}")
         batch_iter2 = pf2.iter_batches(batch_size=batch_size)
         batch_num = 1
 
@@ -140,24 +140,24 @@ def merge_orderfilled_files(file1, file2, output_file, auto_yes=False):
             writer.write_batch(batch)
             total_rows_written += len(batch)
             if batch_num % 10 == 0:
-                logger.info(f"  已写入第 {batch_num} 批: {len(batch):,} 行（累计 {total_rows_written:,} 行）")
+                logger.info(f"  Wrote batch {batch_num}: {len(batch):,} rows (total {total_rows_written:,} rows)")
             batch_num += 1
 
-        logger.info(f"  ✓ 文件2完成，共 {pf2.metadata.num_rows:,} 行")
+        logger.info(f"  ✓ File 2 complete, total {pf2.metadata.num_rows:,} rows")
 
-        # 关闭 writer
+        # Close writer.
         writer.close()
 
         output_size_mb = output_path.stat().st_size / 1024 / 1024
-        logger.info(f"\n=== 合并完成 ===")
-        logger.info(f"输出文件: {output_file}")
-        logger.info(f"总行数: {total_rows_written:,}")
-        logger.info(f"文件大小: {output_size_mb:.1f} MB")
+        logger.info("\n=== Merge complete ===")
+        logger.info(f"Output file: {output_file}")
+        logger.info(f"Total rows: {total_rows_written:,}")
+        logger.info(f"File size: {output_size_mb:.1f} MB")
 
         return True
 
     except Exception as e:
-        logger.error(f"合并失败: {e}")
+        logger.error(f"Merge failed: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -165,13 +165,13 @@ def merge_orderfilled_files(file1, file2, output_file, auto_yes=False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='合并 orderfilled 文件（处理 schema 不一致）'
+        description='Merge orderfilled files (handle schema mismatches)'
     )
 
-    parser.add_argument('file1', help='第一个文件（需要转换）')
-    parser.add_argument('file2', help='第二个文件（作为 schema 基准）')
-    parser.add_argument('-o', '--output', required=True, help='输出文件路径')
-    parser.add_argument('-y', '--yes', action='store_true', help='自动确认覆盖')
+    parser.add_argument('file1', help='First file (requires conversion)')
+    parser.add_argument('file2', help='Second file (used as the schema baseline)')
+    parser.add_argument('-o', '--output', required=True, help='Output file path')
+    parser.add_argument('-y', '--yes', action='store_true', help='Automatically confirm overwrite')
 
     args = parser.parse_args()
 
