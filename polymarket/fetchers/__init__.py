@@ -7,5 +7,6 @@ fetchers - data retrieval
 
 from .rpc import PolygonRpcClient, LogFetcher
 from .gamma import GammaApiClient
+from .resolutions import ResolutionFetcher
 
-__all__ = ['PolygonRpcClient', 'LogFetcher', 'GammaApiClient']
+__all__ = ['PolygonRpcClient', 'LogFetcher', 'GammaApiClient', 'ResolutionFetcher']

@@ -76,6 +76,7 @@ We provide **107GB of trading data** from Polymarket containing **1.1 billion re
 | `markets.parquet` | 68MB | 268,706 | Market information and metadata |
 | `quant.parquet` | 21GB | 170.3M | Clean market data with unified YES perspective |
 | `users.parquet` | 23GB | 340.6M | User behavior data split by maker/taker roles |
+| `resolutions.parquet` | — | — | CTF market creation + final payout vectors (NEW) |
 
 **Total**: 107GB, 1.1 billion records
 
@@ -309,6 +310,49 @@ Market information and outcome token details.
 
 **Best for:** Linking trades to market context, filtering by market attributes
 
+### resolutions.parquet - CTF Market Creation & Final Payouts
+
+On-chain market lifecycle events from the Polymarket Conditional Token Framework
+(`0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` on Polygon). Captures both
+`ConditionPreparation` (a market is created) and `ConditionResolution` (a
+market's final payout vector is recorded on-chain) events.
+
+**Why this dataset:** `trades.parquet` shows every fill but never tells you
+who won. `resolutions.parquet` is the only authoritative record of final
+outcomes — required for PnL, settlement analysis, and "was this market
+efficient" research.
+
+**Schema:**
+```python
+{
+    'block_number': int,             # Block where the event was emitted
+    'transaction_hash': str,         # Tx that contained the event
+    'log_index': int,                # Log position in the tx
+    'timestamp': int,                # Unix timestamp
+    'datetime': str,                 # Human-readable timestamp
+    'event_name': str,               # 'ConditionPreparation' | 'ConditionResolution'
+    'condition_id': str,             # CTF conditionId (bytes32 hex)
+    'oracle': str,                   # Oracle/adapter address that resolved the market
+    'question_id': str,              # CTF questionId (bytes32 hex)
+    'outcome_slot_count': int,       # Number of outcomes for the market
+    'payout_numerators': list[int],  # Payout vector (empty for Preparation events)
+    'outcome_index': int | None,     # Convenience: which outcome won (None for non-clean payouts)
+}
+```
+
+**Fetching:**
+```bash
+# Most recent 100,000 blocks
+python -m polymarket.cli fetch-resolutions --blocks 100000 --merge
+
+# Specific range, with an archive RPC (free public ones often suffice)
+python -m polymarket.cli fetch-resolutions --range 80000000 80100000 \
+    --rpc-url https://polygon.drpc.org --merge
+
+# Continue from the last checkpoint
+python -m polymarket.cli fetch-resolutions --continue --merge
+```
+
 See [DATA_DESCRIPTION.md](polymarket_data/DATA_DESCRIPTION.md) for complete schema documentation.
 
 ## Data Processing Pipeline
@@ -445,6 +489,9 @@ python -m polymarket.cli fetch-markets
 # Fetch on-chain data
 python -m polymarket.cli fetch-onchain --blocks 1000
 python -m polymarket.cli fetch-onchain --continue
+
+# Fetch CTF market creation + resolution events
+python -m polymarket.cli fetch-resolutions --blocks 100000 --merge
 
 # Process data
 python -m polymarket.cli process
