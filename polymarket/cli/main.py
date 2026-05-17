@@ -28,13 +28,15 @@ from ..config import (
     TRADES_OUTPUT_FILE, TRADES_PREVIEW_FILE,
     MARKETS_PREVIEW_FILE, ORDERFILLED_PREVIEW_FILE,
     USERS_CLEAN_FILE, QUANT_CLEAN_FILE,
-    USERS_PREVIEW_FILE, QUANT_PREVIEW_FILE
+    USERS_PREVIEW_FILE, QUANT_PREVIEW_FILE,
+    RESOLUTIONS_FILE, RESOLUTIONS_PREVIEW_FILE,
 )
-from ..fetchers import LogFetcher, GammaApiClient
+from ..fetchers import LogFetcher, GammaApiClient, ResolutionFetcher
 from ..processors import (
     EventDecoder, extract_trades,
     load_token_mapping, find_missing_tokens, save_preview_csv,
-    clean_users, clean_trades, clean_users_df, clean_trades_df
+    clean_users, clean_trades, clean_users_df, clean_trades_df,
+    ResolutionDecoder,
 )
 
 logger = logging.getLogger(__name__)
@@ -1161,6 +1163,183 @@ def cmd_update(args):
     logger.info("\nFull update complete!")
 
 
+def cmd_fetch_resolutions(args):
+    """Fetch CTF ConditionPreparation + ConditionResolution events.
+
+    These events come from the Conditional Token Framework contract on Polygon
+    and give the canonical market-creation and market-settlement records that
+    are not derivable from OrderFilled trades alone. The output parquet has
+    one row per CTF event, keyed by (transaction_hash, log_index), with a
+    payout_numerators vector for resolved markets.
+    """
+    import signal
+
+    MAX_BLOCKS = 1_000_000
+    MIN_BLOCK = 1
+
+    if args.blocks is not None and (args.blocks <= 0 or args.blocks > MAX_BLOCKS):
+        logger.error(f"--blocks out of range (1..{MAX_BLOCKS}): {args.blocks}")
+        return
+
+    if args.range is not None:
+        start_r, end_r = args.range
+        if start_r < MIN_BLOCK or end_r < MIN_BLOCK or start_r > end_r:
+            logger.error(f"Invalid --range {start_r} {end_r}")
+            return
+        if end_r - start_r + 1 > MAX_BLOCKS:
+            logger.error(f"--range exceeds {MAX_BLOCKS} blocks")
+            return
+
+    fetcher = ResolutionFetcher(use_alchemy=args.alchemy, rpc_url=getattr(args, 'rpc_url', None))
+    decoder = ResolutionDecoder()
+
+    # Track resolutions checkpoint independently from the orderfilled crawler.
+    def _resolutions_last_block() -> int:
+        if STATE_FILE.exists():
+            try:
+                with open(STATE_FILE) as f:
+                    return int(json.load(f).get('fetch_resolutions', {}).get('last_block', 0))
+            except Exception:
+                return 0
+        return 0
+
+    def _save_resolutions_last_block(b: int):
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state = {}
+        if STATE_FILE.exists():
+            try:
+                with open(STATE_FILE) as f:
+                    state = json.load(f)
+            except Exception:
+                pass
+        state['fetch_resolutions'] = {
+            'last_block': b,
+            'updated_at': datetime.now().isoformat(),
+        }
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=2)
+
+    if args.continue_from:
+        last = _resolutions_last_block()
+        start = (last + 1) if last > 0 else fetcher.get_latest_block() - 10_000
+        end = fetcher.get_latest_block()
+    elif args.blocks:
+        end = fetcher.get_latest_block()
+        start = end - args.blocks + 1
+    elif args.range:
+        start, end = args.range
+    else:
+        logger.error("Please specify --blocks, --range, or --continue")
+        return
+
+    if start > end:
+        logger.info("No new blocks")
+        return
+
+    logger.info(f"Fetching CTF resolutions for blocks {start} - {end} (total {end - start + 1})")
+    DATASET_DIR.mkdir(parents=True, exist_ok=True)
+    LATEST_RESULT_DIR.mkdir(parents=True, exist_ok=True)
+
+    stop_requested = False
+
+    def signal_handler(signum, frame):
+        nonlocal stop_requested
+        logger.warning(f"Received exit signal ({signum}); finishing current batch before shutdown.")
+        stop_requested = True
+
+    original_sigint = signal.signal(signal.SIGINT, signal_handler)
+    original_sigterm = signal.signal(signal.SIGTERM, signal_handler)
+
+    session_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    session_file = DATASET_DIR / f'resolutions_session_{session_ts}.parquet'
+
+    writer = None
+    batch_size = 1000  # CTF events are sparse; we can cover more blocks per batch.
+    last_saved_block = start - 1
+    total_rows = 0
+    failed_blocks_file = DATA_DIR / f'failed_blocks_resolutions_{session_ts}.txt'
+    failed_count = 0
+
+    def record_failed(s, e):
+        nonlocal failed_count
+        with open(failed_blocks_file, 'a') as f:
+            f.write(f"{s}-{e}\n")
+        failed_count += 1
+        logger.warning(f"Recorded failed CTF block range: {s}-{e}")
+
+    try:
+        current = start
+        while current <= end:
+            if stop_requested:
+                break
+            batch_end = min(current + batch_size - 1, end)
+            logs = fetcher.fetch_range_in_batches(current, batch_end)
+            if logs is None:
+                record_failed(current, batch_end)
+                current = batch_end + 1
+                continue
+
+            if logs:
+                rows = decoder.decode_batch(logs)
+                if rows:
+                    df = pd.DataFrame(rows)
+                    table = pa.Table.from_pandas(df, preserve_index=False)
+                    if writer is None:
+                        writer = pq.ParquetWriter(str(session_file), table.schema, compression='snappy')
+                    writer.write_table(table)
+                    total_rows += len(rows)
+                    # Preview tail
+                    df.tail(1000).to_csv(RESOLUTIONS_PREVIEW_FILE, index=False)
+                    logger.info(
+                        f"Blocks {current}-{batch_end}: +{len(rows)} CTF events "
+                        f"(running total {total_rows:,})"
+                    )
+
+            last_saved_block = batch_end
+            current = batch_end + 1
+            _save_resolutions_last_block(last_saved_block)
+
+        if writer is not None:
+            writer.close()
+
+        if total_rows > 0 and getattr(args, 'merge', False):
+            logger.info("Merging session into resolutions.parquet...")
+            if RESOLUTIONS_FILE.exists():
+                main_table = pq.read_table(RESOLUTIONS_FILE)
+                new_table = pq.read_table(session_file)
+                combined = pa.concat_tables([main_table, new_table], promote_options='default')
+                pq.write_table(combined, RESOLUTIONS_FILE, compression='snappy')
+                session_file.unlink()
+            else:
+                import shutil
+                shutil.move(str(session_file), str(RESOLUTIONS_FILE))
+            logger.info(f"Merged into {RESOLUTIONS_FILE}")
+        elif total_rows > 0:
+            logger.info(f"Wrote {total_rows} rows to {session_file} (use --merge to merge)")
+        else:
+            logger.info("No CTF events in the requested range")
+            if session_file.exists() and session_file.stat().st_size == 0:
+                session_file.unlink()
+
+        if failed_count > 0:
+            logger.warning(
+                f"{failed_count} CTF block ranges failed; recorded in {failed_blocks_file}"
+            )
+    except Exception as e:
+        logger.error(f"fetch-resolutions failed: {e}")
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:
+                pass
+        if last_saved_block >= start:
+            _save_resolutions_last_block(last_saved_block)
+        raise
+    finally:
+        signal.signal(signal.SIGINT, original_sigint)
+        signal.signal(signal.SIGTERM, original_sigterm)
+
+
 def cmd_merge_sessions(args):
     """Merge all session files into the main files"""
     import glob as glob_module
@@ -1278,6 +1457,18 @@ def main():
     p7.add_argument('--skip-missing', action='store_true', help='Skip missing token backfill')
     p7.add_argument('--clean', dest='with_clean', action='store_true', help='Also run data cleaning')
 
+    # fetch-resolutions
+    p_res = subparsers.add_parser('fetch-resolutions',
+                                   help='Fetch CTF ConditionPreparation + ConditionResolution events')
+    p_res.add_argument('-b', '--blocks', type=int, help='Most recent N blocks')
+    p_res.add_argument('-r', '--range', nargs=2, type=int, metavar=('START', 'END'))
+    p_res.add_argument('-c', '--continue', dest='continue_from', action='store_true')
+    p_res.add_argument('-a', '--alchemy', action='store_true')
+    p_res.add_argument('--rpc-url', dest='rpc_url', default=None,
+                       help='Override RPC endpoint (useful for archive nodes)')
+    p_res.add_argument('-m', '--merge', action='store_true',
+                       help='Merge the session file into resolutions.parquet')
+
     # merge-sessions
     p8 = subparsers.add_parser('merge-sessions', help='Merge all session files into the main files')
 
@@ -1304,6 +1495,8 @@ def main():
         cmd_update(args)
     elif args.command == 'merge-sessions':
         cmd_merge_sessions(args)
+    elif args.command == 'fetch-resolutions':
+        cmd_fetch_resolutions(args)
     else:
         parser.print_help()
 

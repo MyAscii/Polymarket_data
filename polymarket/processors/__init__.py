@@ -16,6 +16,7 @@ from .trades import (
     TokenMapper,
 )
 from .cleaner import clean_users, clean_trades, clean_users_df, clean_trades_df
+from .resolution_decoder import ResolutionDecoder
 
 __all__ = [
     'EventDecoder',
@@ -29,4 +30,5 @@ __all__ = [
     'clean_trades',
     'clean_users_df',
     'clean_trades_df',
+    'ResolutionDecoder',
 ]

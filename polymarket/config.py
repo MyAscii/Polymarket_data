@@ -24,11 +24,13 @@ DECODED_EVENTS_FILE = DATASET_DIR / 'orderfilled.parquet'
 MARKETS_FILE = DATASET_DIR / 'markets.parquet'
 MISSING_MARKETS_FILE = DATASET_DIR / 'missing_markets.parquet'
 TRADES_OUTPUT_FILE = DATASET_DIR / 'trades.parquet'
+RESOLUTIONS_FILE = DATASET_DIR / 'resolutions.parquet'
 
 # CSV preview files (stored in data/latest_result/)
 MARKETS_PREVIEW_FILE = LATEST_RESULT_DIR / 'markets.csv'
 ORDERFILLED_PREVIEW_FILE = LATEST_RESULT_DIR / 'orderfilled.csv'
 TRADES_PREVIEW_FILE = LATEST_RESULT_DIR / 'trades.csv'
+RESOLUTIONS_PREVIEW_FILE = LATEST_RESULT_DIR / 'resolutions.csv'
 
 # Cleaned data directory (stored in data/data_clean/)
 DATA_CLEAN_DIR = DATA_DIR / 'data_clean'
@@ -103,13 +105,23 @@ EXCHANGE_ADDRESSES = {
 
 # ============== Event signatures ==============
 
-# Focus only on the OrderFilled event
-EVENT_SIGNATURES = {
-    'OrderFilled': 'd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6',
-}
-
 # OrderFilled event signature (with 0x prefix)
 ORDER_FILLED_TOPIC = '0xd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6'
+
+# Conditional Token Framework (CTF) on Polygon — market creation + resolution.
+# Verified against on-chain logs at the CTF contract.
+CTF_CONTRACT_ADDRESS = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045'
+# keccak256("ConditionPreparation(bytes32,address,bytes32,uint256)")
+CONDITION_PREPARATION_TOPIC = '0xab3760c3bd2bb38b5bcf54dc79802ed67338b4cf29f3054ded67ed24661e4177'
+# keccak256("ConditionResolution(bytes32,address,bytes32,uint256,uint256[])")
+CONDITION_RESOLUTION_TOPIC = '0xb44d84d3289691f71497564b85d4233648d9dbae8cbdbb4329f301c3a0185894'
+
+# All event signatures the project knows how to decode.
+EVENT_SIGNATURES = {
+    'OrderFilled': 'd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6',
+    'ConditionPreparation': 'ab3760c3bd2bb38b5bcf54dc79802ed67338b4cf29f3054ded67ed24661e4177',
+    'ConditionResolution': 'b44d84d3289691f71497564b85d4233648d9dbae8cbdbb4329f301c3a0185894',
+}
 
 
 def get_event_name(signature: str) -> str:
