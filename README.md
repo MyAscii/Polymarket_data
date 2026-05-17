@@ -233,16 +233,28 @@ Polymarket_data/
 
 ### OrderFilled Events (Raw)
 
+The same schema covers V1 and V2. V2-era rows have `exchange_version='v2'` and
+populate the V2-only fields (`builder`, `metadata`) and an explicit `side`.
+V2's `tokenId`+`side` are mapped onto `maker_asset_id`/`taker_asset_id` using
+V1's USDC=`"0"` convention so the downstream `extract_trades` logic works
+unchanged across the cutover.
+
 | Field | Description |
 |-------|-------------|
 | timestamp | Unix timestamp |
 | block_number | Block number |
 | transaction_hash | Transaction hash |
-| contract | Contract name (CTF_EXCHANGE or NEGRISK_CTF_EXCHANGE) |
+| log_index | Position of the log in the tx |
+| exchange_version | `v1` or `v2` |
+| contract | Contract name (CTF_EXCHANGE, NEGRISK_CTF_EXCHANGE, or their V2 variants) |
 | maker / taker | Trading parties' addresses |
-| maker_asset_id / taker_asset_id | Asset IDs |
+| maker_asset_id / taker_asset_id | Asset IDs (USDC = `"0"`; V2 rows synthesize these from `tokenId`+`side`) |
 | maker_amount_filled / taker_amount_filled | Filled amounts |
-| maker_fee / taker_fee / protocol_fee | Fees (in wei) |
+| fee | Single on-chain fee value (both V1 and V2 have one fee field) |
+| maker_fee / taker_fee / protocol_fee | Backward-compat columns: `maker_fee == fee`; `taker_fee` and `protocol_fee` are always `0` |
+| side | `BUY` or `SELL` from the maker's perspective (V2 native; V1 derived from asset_ids) |
+| builder | V2-only attribution bytes32 (empty for V1) |
+| metadata | V2-only metadata bytes32 (empty for V1) |
 | order_hash | Order hash |
 
 ### Trades (Processed)
@@ -532,8 +544,24 @@ print(top_markets)
 - **Open Source**: Fully reproducible collection process
 
 **Contracts Tracked:**
-- Exchange Contract 1: `0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E`
-- Exchange Contract 2: `0xC5d563A36AE78145C45a50134d48A1215220f80a`
+
+*V1 (legacy — still produces resolution / tail-trade rows):*
+- CTF Exchange:        `0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E`
+- NegRisk CTF Exchange: `0xC5d563A36AE78145C45a50134d48A1215220f80a`
+
+*V2 (active trading since the April 28, 2026 cutover):*
+- CTF Exchange V2:        `0xE111180000d2663C0091e4f400237545B87B996B`
+- NegRisk CTF Exchange V2: `0xe2222d279d744050d28e00520010520000310F59`
+
+The crawler tracks all four addresses in a single `eth_getLogs` query and filters
+on both the V1 and V2 `OrderFilled` topic hashes. Each row is tagged with
+`exchange_version` (`v1` or `v2`). V2's `tokenId`+`side` are mapped back to V1's
+`makerAssetId`/`takerAssetId` so downstream processing is unchanged across the
+cutover. V2-only fields (`builder`, `metadata`) are also captured.
+
+The Conditional Token Framework (CTF) contract is unchanged at
+`0x4D97DCd97eC945f40cF65F87097ACe5EA0476045`, so `resolutions.parquet` and
+`ctf_positions.parquet` work identically for V1- and V2-era markets.
 
 ## CLI Commands
 

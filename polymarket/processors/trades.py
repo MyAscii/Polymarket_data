@@ -22,8 +22,11 @@ logger = logging.getLogger(__name__)
 # USDC precision.
 USDC_DECIMALS = 10 ** 6
 
-# Names of the two exchange contracts.
-EXCHANGE_CONTRACTS = {'CTF_EXCHANGE', 'NEGRISK_CTF_EXCHANGE'}
+# Names of all exchange contracts (V1 + V2).
+EXCHANGE_CONTRACTS = {
+    'CTF_EXCHANGE', 'NEGRISK_CTF_EXCHANGE',
+    'CTF_EXCHANGE_V2', 'NEGRISK_CTF_EXCHANGE_V2',
+}
 
 
 def extract_trades(events: List[Dict[str, Any]], token_mapping: Optional[Dict[str, Dict]] = None) -> pd.DataFrame:
