@@ -198,6 +198,10 @@ class ContinuousFetcher:
         # Generate the timestamp for this session.
         self.session_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
+        # Log of ranges that could not be fetched even after retries.
+        # refetch_failed_blocks.py can later backfill these to close gaps.
+        self.failed_blocks_file = self.output_dir / f'failed_blocks_{self.session_timestamp}.txt'
+
         # Writer.
         self.writer = ContinuousWriter(output_dir, self.session_timestamp)
 
@@ -257,13 +261,57 @@ class ContinuousFetcher:
             logger.error(f"Failed to get the latest block: {e}")
             return None
 
-    def fetch_and_process_range(self, start_block, end_block):
-        """Fetch and process a block range."""
+    def _process_with_retries(self, start_block, end_block, max_attempts=3, backoff=5.0):
+        """Retry a range on RPC failure before giving up.
+
+        Returns True on success, False if the range still fails after all
+        attempts — in which case the range is logged to failed_blocks so a
+        later backfill pass can recover it.
+        """
+        for attempt in range(1, max_attempts + 1):
+            if self.fetch_and_process_range(start_block, end_block):
+                return True
+            if attempt < max_attempts:
+                sleep_for = backoff * attempt
+                logger.warning(
+                    f"  Retry {attempt}/{max_attempts - 1} for blocks "
+                    f"{start_block:,}-{end_block:,} in {sleep_for:.0f}s"
+                )
+                time.sleep(sleep_for)
+        self._record_failed_range(start_block, end_block)
+        return False
+
+    def _record_failed_range(self, start_block, end_block):
+        """Persist a block range that could not be fetched after retries."""
         try:
-            # Fetch logs.
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            with open(self.failed_blocks_file, 'a') as f:
+                f.write(f"{start_block}-{end_block}\n")
+            logger.error(
+                f"  ✗ Recorded unresolvable range to {self.failed_blocks_file.name}; "
+                f"run refetch_failed_blocks.py later to backfill"
+            )
+        except Exception as e:
+            logger.error(f"  Failed to record failed range {start_block}-{end_block}: {e}")
+
+    def fetch_and_process_range(self, start_block, end_block):
+        """Fetch and process a block range.
+
+        Returns:
+            True  — fetch succeeded (possibly with zero matching events)
+            False — RPC failure; caller should NOT advance state past this range
+        """
+        try:
+            # Fetch logs. fetch_range_in_batches already retries each batch
+            # and bisects on persistent failure, so None here means we truly
+            # could not retrieve the data — never treat that as "no events."
             logs = self.fetcher.fetch_range_in_batches(start_block, end_block)
-            if logs is None or len(logs) == 0:
-                logger.info(f"Block range {start_block:,}-{end_block:,} has no data")
+            if logs is None:
+                logger.error(f"  ✗ RPC failed for blocks {start_block:,}-{end_block:,}")
+                return False
+
+            if len(logs) == 0:
+                logger.info(f"Block range {start_block:,}-{end_block:,} has no OrderFilled events")
                 return True
 
             logger.info(f"  Fetched {len(logs)} logs")
@@ -358,15 +406,22 @@ class ContinuousFetcher:
                         # Batch mode: process 100 blocks at a time.
                         end_block = next_block + self.batch_size - 1
                         logger.info(f"[Batch mode] Processing {next_block:,} - {end_block:,} (behind by {blocks_behind:,} blocks)")
-                        success = self.fetch_and_process_range(next_block, end_block)
+                        success = self._process_with_retries(next_block, end_block)
 
                         if success:
                             self.last_processed_block = end_block
                             self.save_state(end_block)
                             logger.info(f"✓ Updated state: {end_block:,}\n")
                         else:
-                            time.sleep(5)
-                            continue
+                            # _process_with_retries already recorded the range
+                            # to failed_blocks_*.txt; advance so the loop keeps
+                            # up with the chain instead of stalling forever.
+                            self.last_processed_block = end_block
+                            self.save_state(end_block)
+                            logger.warning(
+                                f"⚠ Advancing past unresolvable range {next_block:,}-{end_block:,}; "
+                                f"backfill from {self.failed_blocks_file.name}\n"
+                            )
 
                         # Continue to the next batch without waiting.
                         time.sleep(0.5)
@@ -374,15 +429,19 @@ class ContinuousFetcher:
                         # Realtime mode: process 1 block at a time.
                         end_block = next_block
                         logger.info(f"[Realtime mode] Processing block {next_block:,} (latest: {latest_block:,})")
-                        success = self.fetch_and_process_range(next_block, end_block)
+                        success = self._process_with_retries(next_block, end_block)
 
                         if success:
                             self.last_processed_block = end_block
                             self.save_state(end_block)
                             logger.info(f"✓ Updated state: {end_block:,}\n")
                         else:
-                            time.sleep(5)
-                            continue
+                            self.last_processed_block = end_block
+                            self.save_state(end_block)
+                            logger.warning(
+                                f"⚠ Advancing past unresolvable block {end_block:,}; "
+                                f"backfill from {self.failed_blocks_file.name}\n"
+                            )
 
                         # Realtime mode: wait 2 seconds.
                         last_log_time = time.time()

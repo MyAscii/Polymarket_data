@@ -37,24 +37,37 @@ class PolygonRpcClient:
     def get_latest_block(self) -> int:
         return self.w3.eth.block_number
 
-    def get_logs(self, start_block: int, end_block: int) -> Optional[List[Dict[str, Any]]]:
+    def get_logs(self, start_block: int, end_block: int,
+                 max_retries: int = 3, retry_backoff: float = 1.5) -> Optional[List[Dict[str, Any]]]:
         """Get OrderFilled logs within a block range.
+
+        Retries transient RPC errors with exponential backoff before giving up.
 
         Returns:
             List[Dict]: log list on success, which may be empty
-            None: returned when the RPC request fails
+            None: returned only when all retries are exhausted
         """
-        try:
-            logs = self.w3.eth.get_logs({
-                'fromBlock': start_block,
-                'toBlock': end_block,
-                'address': self.contract_addresses,
-                'topics': [ORDER_FILLED_TOPIC]  # Fetch only OrderFilled events.
-            })
-            return [dict(log) for log in logs]
-        except Exception as e:
-            logger.error(f"Failed to get logs: {e}")
-            return None  # None means request failure, distinct from an empty list for no data.
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                logs = self.w3.eth.get_logs({
+                    'fromBlock': start_block,
+                    'toBlock': end_block,
+                    'address': self.contract_addresses,
+                    'topics': [ORDER_FILLED_TOPIC]  # Fetch only OrderFilled events.
+                })
+                return [dict(log) for log in logs]
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    sleep_for = retry_backoff ** attempt
+                    logger.warning(
+                        f"get_logs({start_block}-{end_block}) attempt {attempt + 1}/{max_retries} "
+                        f"failed: {e}; retrying in {sleep_for:.1f}s"
+                    )
+                    time.sleep(sleep_for)
+        logger.error(f"get_logs({start_block}-{end_block}) failed after {max_retries} attempts: {last_error}")
+        return None  # None means request failure, distinct from an empty list for no data.
 
     def get_block_timestamp(self, block_number: int) -> int:
         """Get a block timestamp."""
@@ -218,12 +231,19 @@ class LogFetcher:
             return None
 
     def fetch_range_in_batches(self, start_block: int, end_block: int,
-                                batch_size: int = BLOCKS_PER_BATCH) -> Optional[List[Dict[str, Any]]]:
+                                batch_size: int = BLOCKS_PER_BATCH,
+                                bisect_on_failure: bool = True) -> Optional[List[Dict[str, Any]]]:
         """Fetch in batches.
+
+        If a batch fails and bisect_on_failure is True, the batch is split in
+        half and each half is retried independently, recursing down to a single
+        block. This prevents one transient failure from dropping an entire
+        100-block range — the historical cause of silent block gaps in the
+        dataset.
 
         Returns:
             List[Dict]: record list on success, which may be empty
-            None: returned when the RPC request fails
+            None: returned only when even single-block fetches fail
         """
         all_records = []
         current = start_block
@@ -232,9 +252,27 @@ class LogFetcher:
             batch_end = min(current + batch_size - 1, end_block)
             records = self.fetch_block_range(current, batch_end)
             if records is None:
-                # RPC failed, return None so the caller can handle it.
-                return None
-            all_records.extend(records)
+                if bisect_on_failure and batch_end > current:
+                    # Split the failing range and retry each half. Recursing
+                    # narrows the failure to the actual bad block(s), letting
+                    # the surrounding good blocks succeed.
+                    mid = (current + batch_end) // 2
+                    logger.warning(
+                        f"Bisecting failed range {current}-{batch_end} -> "
+                        f"{current}-{mid}, {mid + 1}-{batch_end}"
+                    )
+                    left = self.fetch_range_in_batches(current, mid, batch_size, bisect_on_failure)
+                    right = self.fetch_range_in_batches(mid + 1, batch_end, batch_size, bisect_on_failure)
+                    if left is None or right is None:
+                        # One of the sub-ranges still couldn't be fetched.
+                        return None
+                    all_records.extend(left)
+                    all_records.extend(right)
+                else:
+                    # Single block still failing, or bisection disabled.
+                    return None
+            else:
+                all_records.extend(records)
             current = batch_end + 1
             if current <= end_block:
                 time.sleep(REQUEST_DELAY)
